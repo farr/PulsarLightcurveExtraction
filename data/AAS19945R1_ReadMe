@@ -1,0 +1,39 @@
+================================================================================
+Title: Constraining the Neutron Star Mass-Radius Relation and Dense Matter
+    Equation of State with NICER. I. The Millisecond Pulsar X-Ray Data Set 
+Authors: Bogdanov S., Guillot S., Ray P.S., Wolff M.T., Chakrabarty D., 
+    Ho W.C.G., Kerr M., Lamb F.K., Lommen A., Ludlam R.M., Milburn R., 
+    Montano S., Miller M.C., Baubock M., Ozel F., Psaltis D., Remillard R.A., 
+    Riley T.E., Steiner J.F., Strohmayer T.E., Watts A.L., Wood K.S., 
+    Zeldes J., Enoto T., Okajima T., Kellogg J.W., Baker C., Markwardt C.B., 
+    Arzoumanian Z., Gendreau K.C. 
+================================================================================
+Description of contents: This deposit includes the cleaned, filtered and 
+	phase folded NICER event data set for the millisecond pulsar (MSP) PSR 
+	J0030+0451 in the 0.25-3 keV band. The data processing and filtering 
+	was performed using HEASoft 6.25.1 and NICERDAS version 5.0; the 
+	specific parameters and filtering criteria used are detailed in the ApJ 
+	Letter listed above. This event list was used to produce what is shown 
+	for PSR J0030+0451 in Figures 2, 3, and 4 in the accepted ApJ Letter 
+	listed above and was also used for the mass-radius and equation of state 
+	inference analyses presented in the companion papers (Miller et al. 2019, 
+	Riley et al. 2019, and Raaijmakers et al. 2019).
+    
+    The event file and its MD5 checksum is: 
+    
+    J0030+0451_merged_phase_0.25-3keV.fits (463bbac7203bb45bb02ea0deed49f083)
+    
+
+System requirements: The event list is provided in Flexible Image Transport System 
+ (FITS) format, which can be read using the CFITSIO libraries of C and Fortran, the 
+ astropy.io.fits module in Python, or the FTOOLS software package available from 
+ the HEASARC (https://heasarc.gsfc.nasa.gov/docs/software/ftools/ftools_menu.html).
+
+Additional comments: The original unfiltered NICER data set that was used to obtain
+ the cleaned data set provided here is publicly available for download from the 
+ HEASARC. The cleaned file provided preserves all necessary FITS header keywords, 
+ event list columns, and the table of good time intervals. The column PULSE_PHASE
+ gives the pulsar rotational phase for each event, obtained by folding the data at 
+ the pulsar ephemeris, as described in the ApJ Letter.    
+
+================================================================================

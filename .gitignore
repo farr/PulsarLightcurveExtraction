@@ -1,0 +1,6 @@
+.CondaPkg
+Manifest.toml
+heasoft/J0740/[0-9]*/*
+.DS_Store
+data/*.pdf
+data/*.nc
