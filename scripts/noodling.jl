@@ -71,7 +71,7 @@ function traceplot(chain; var_names=nothing)
     return f
 end
 
-chain = from_netcdf(joinpath(@__DIR__, "..", "data", "$(phone_number)_varying_background_fourier.nc"))
+chain = from_netcdf(joinpath(@__DIR__, "..", "data", "$(phone_number)_spectral_varying_background_fourier.nc"))
 
 nseg = length(dims(chain.posterior, :segment))
 sel = times .< segment_ends[nseg]
@@ -83,7 +83,7 @@ mean_rate = sum(sel)/T
 sumry = ArviZ.summarize(chain)
 min_ess = minimum(sumry.data.ess_bulk)
 imin_ess = argmin(sumry.data.ess_bulk)
-@info @sprintf("Min bulk ESS = %.1f for %s", min_ess, sumry.parameter_names[imin_ess])
+@info @sprintf("Min bulk ESS = %.1f for %s", min_ess, sumry.data.label[imin_ess])
 
 traceplot(chain; var_names=(:mu_log_bg, :sigma_log_bg, :sigma_beta, :beta_cos, :beta_sin))
 

@@ -40,7 +40,7 @@ n_fourier = 10
 si = segment_indices(times, segment_starts, segment_ends)
 cm, sm = cos_sin_matrices(phases,n_fourier)
 
-nseg = 10 # length(segment_ends)
+nseg = 500 # length(segment_ends)
 sel = times .< segment_ends[nseg]
 
 T = sum(segment_ends[1:nseg] .- segment_starts[1:nseg])
