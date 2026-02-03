@@ -1,12 +1,16 @@
 using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 
+using AdvancedHMC
 using ArviZ
+using Bijectors
 using CairoMakie
+using CategoricalArrays
 using Colors
 using DataFrames
 using DimensionalData
 using Distributions
+using DynamicPPL
 using FITSIO
 using GaussianKDEs
 using LaTeXStrings
@@ -27,6 +31,10 @@ phases = read(f[2], "PULSE_PHASE")
 pi_channel = read(f[2], "PI")
 segment_starts = read(f[time_hdi], "START")
 segment_ends = read(f[time_hdi], "STOP")
+
+pi_channels_categorical = CategoricalArray(pi_channel)
+pi_indices = levelcode.(pi_channels_categorical)
+nchannels = length(levels(pi_channels_categorical))
 
 n_fourier = 10
 si = segment_indices(times, segment_starts, segment_ends)
@@ -156,6 +164,34 @@ axislegend(a)
 f
 # save("/Users/wfarr/Downloads/j0030_beta_significance.png", f)
 
+# Background spectrum
+f = Figure()
+a = Axis(f[1,1], xlabel="Channel", ylabel="Fractional Contribution", title="$(phone_number) Background Spectrum")
+m = mean(chain.posterior.bg_spec, dims=(:chain, :draw))
+s = std(chain.posterior.bg_spec, dims=(:chain, :draw))
+ch = collect(dims(chain.posterior.bg_spec, :channel))
+lines!(a, vec(ch), vec(m), label="Mean Background Spectrum")
+band!(a, vec(ch), vec(m .- s), vec(m .+ s), color=(Makie.wong_colors()[1], 0.25))
+f
+# save("/Users/wfarr/Downloads/j0030_bg_spectrum.png", f)
+
+## Foreground Spectrum
+f = Figure()
+a = Axis(f[1,1], xlabel="Channel", ylabel="Fractional Contribution", title="$(phone_number) Foreground Spectrum")
+m = mean(chain.posterior.fg_spec, dims=(:chain, :draw))
+s = std(chain.posterior.fg_spec, dims=(:chain, :draw))
+ch = collect(dims(chain.posterior.fg_spec, :channel))
+fr = collect(dims(chain.posterior.fg_spec, :fourier))
+nf = 2
+for (i, f) in enumerate(fr[1:nf])
+    mm = m[fourier=At(f)]
+    ss = s[fourier=At(f)]
+    lines!(a, vec(ch), vec(mm), label="Mode $(f)")
+    band!(a, vec(ch), vec(mm .- ss), vec(mm .+ ss), color=(Makie.wong_colors()[i], 0.25))
+end
+axislegend(a)
+f
+
 ## Binned model
 nbins = 100
 bin_bounds = range(0, stop=1, length=nbins+1)
@@ -175,9 +211,16 @@ mean_model = M * mean_a
 M_nomean = copy(M)
 M_nomean[:,1] .= 0.0
 
+include_bg = true
+if include_bg
+    MM = M
+else
+    MM = M_nomean
+end
+
 const_bg_lcs = zeros(nbins, 1000)
 for i in 1:1000
-    const_bg_lcs[:,i] = M_nomean * (mean_a .+ AInvCholesky.U \ randn(length(mean_a)))
+    const_bg_lcs[:,i] = MM * (mean_a .+ AInvCholesky.U \ randn(length(mean_a)))
 end
 
 m = zeros(nbins)
@@ -273,4 +316,19 @@ axislegend(a)
 f
 # save("/Users/wfarr/Downloads/lightcurve.png", f)
 
+f = Figure()
+a = Axis(f[1,1], xlabel=L"\log_{10} b_{\mathrm{segment}}")
+cs = husl_wheel(size(chain.posterior.bg_segment, :segment))
+for (i, s) in enumerate(dims(chain.posterior.bg_segment, :segment))
+    log_bg = log10.(vec(chain.posterior.bg_segment[segment=At(s)]))
+    density!(a, log_bg; color=cs[i], label=nothing)
+end
+f
+
 ibest = argmin(vec(median(chain.posterior.bg_segment, dims=(:chain, :draw))))
+
+model = varying_background_spectral_fourier_model(pi_indices[sel], si[sel], segment_starts[1:nseg], segment_ends[1:nseg], cm[sel,:], sm[sel,:], lc_cos_matrix, lc_sin_matrix)
+m = PulsarLightcurveExtraction.parameters_from_arviz(model, chain; unconstrained=true)
+mc = PulsarLightcurveExtraction.parameters_from_arviz(model, chain; unconstrained=false)
+inv_mass_diagonal = dropdims(var(m, dims=(2,3)), dims=(2,3))
+
