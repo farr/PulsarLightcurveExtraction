@@ -13,6 +13,7 @@ export estimate_log_bg
 export estimate_bg_spec
 export spectral_indices
 export spec_fourier_model
+export rebin_energy
 
 """ 
     PI_TO_KEV
@@ -252,5 +253,52 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         Turing.@addlogprob! sum(log.(rate_at_events)) - sum(bg_segment .* segment_Ts)
     end
 end
+
+using DimensionalData
+
+"""
+    rebin_energy(fspec; bins_per=2, keep_partial=true)
+
+Merge `bins_per` neighboring energy bins by summing probabilities.
+Output has fewer `energy` bins and still sums to 1 along energy (if all bins are kept).
+
+- `bins_per=2` merges pairs of bins.
+- `keep_partial=true` keeps a final smaller bin if length(energy) is not divisible by `bins_per`.
+"""
+function rebin_energy(fspec; bins_per::Int=2, keep_partial::Bool=true)
+    bins_per > 0 || error("`bins_per` must be positive.")
+
+    A = parent(fspec)
+    ds = dims(fspec)
+
+    edim = findfirst(d -> Symbol(name(d)) == :energy, ds)
+    edim === nothing && error("No `energy` dimension found.")
+
+    nE = size(A, edim)
+    nBout = keep_partial ? cld(nE, bins_per) : fld(nE, bins_per)
+
+    outsz = collect(size(A))
+    outsz[edim] = nBout
+    B = zeros(eltype(A), Tuple(outsz))
+
+    # Get old energy coordinates (bin centers)
+    Eold = collect(lookup(ds[edim]))
+    Enew = similar(Eold, nBout)
+
+    for b in 1:nBout
+        lo = (b - 1) * bins_per + 1
+        hi = min(b * bins_per, nE)
+
+        # Sum grouped bins into one output bin
+        selectdim(B, edim, b) .= sum(selectdim(A, edim, lo:hi); dims=edim)
+
+        # New bin center = mean of merged centers
+        Enew[b] = mean(@view Eold[lo:hi])
+    end
+
+    newdims = ntuple(i -> i == edim ? Dim{:energy}(Enew) : ds[i], length(ds))
+    return DimArray(B, newdims)
+end
+
 
 end # module PulsarLightcurveExtraction
