@@ -4,3 +4,4 @@ heasoft/J0740/[0-9]*/*
 .DS_Store
 data/*.pdf
 data/*.nc
+data/*.h5
