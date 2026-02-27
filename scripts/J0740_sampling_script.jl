@@ -12,13 +12,20 @@ fg_scale = 5e-6 # Empirically determined fg rate estimate, based on not constrai
 n_chain = 4
 n_mcmc = 1000
 
+target_arate = 0.8
+
+past_run = joinpath(@__DIR__, "..", "data", "J0740_trace.nc")
+
 ## Set up distributed sampling
 using Distributed
-addprocs(n_chain)
+if n_chain > 1
+    addprocs(n_chain)
+end
 
 ## Load packages everywhere
 @everywhere begin
     using ArviZ
+    using DimensionalData
     using FITSIO
     using HDF5
     using LinearAlgebra
@@ -75,6 +82,8 @@ if n_segments !== nothing
     segment_start = segment_start[1:n_segments]
     segment_stop = segment_stop[1:n_segments]
     segment_Ts = segment_Ts[1:n_segments]
+else
+    n_segments = length(segment_start)
 end
 
 ## Estimate helper quantities from the background
@@ -88,8 +97,42 @@ est_bg_spec, est_bg_spec_uncert = PulsarLightcurveExtraction.estimate_bg_spec(ev
 ## Set up the model
 model = PulsarLightcurveExtraction.spec_fourier_model(m, event_segment_indices, event_spectral_indices, segment_Ts, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_scale)
 
+## Find good initialization points
+if past_run !== nothing
+    println("Loading past run from $past_run to find good initial points...")
+    past_trace = from_netcdf(past_run)
+    p = past_trace.posterior
+    init_params = []
+    for _ in 1:n_chain
+        c = rand(span(dims(p, :chain)))
+        d = rand(span(dims(p, :draw)))
+        push!(init_params, InitFromParams(
+            (; dmu_log_bg = float(p[chain=At(c), draw=At(d)].dmu_log_bg[]), 
+            dlog_sigma_log_bg = float(p[chain=At(c), draw=At(d)].dlog_sigma_log_bg[]), 
+            sigma_fg = float(p[chain=At(c), draw=At(d)].sigma_fg[]),
+            fg_coeffs = vec(p[chain=At(c), draw=At(d)].fg_coeffs),
+            log_dbg_segment = vec(p[chain=At(c), draw=At(d)].log_dbg_segment),
+            fg_spec = vec(p[chain=At(c), draw=At(d)].fg_spec),
+            dbg_spec = vec(p[chain=At(c), draw=At(d)].dbg_spec))
+        ))
+    end
+else
+    init_params = [InitFromUniform(-2.0, 2.0) for _ in 1:n_chain]
+end
+
+if n_chain > 1
+    println("Running with $n_chain chains in distributed mode...")
+else
+    println("Running with a single chain, extracting single init_params out of 1-element vector...")
+    init_params = init_params[1]
+end
+
 ## Sample it
-chains = sample(model, NUTS(n_mcmc, 0.65; adtype=AutoMooncake()), MCMCDistributed(), n_mcmc, n_chain)
+if n_chain > 1
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), MCMCDistributed(), n_mcmc, n_chain; initial_params=init_params)
+else
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), n_mcmc; initial_params=init_params)
+end
 
 ## Package it up
 trace = from_mcmcchains(chains; dims=Dict(:fg_coeffs => (:fourier,), :log_dbg_segment => (:segment,), :log_bg_segment => (:segment,), :bg_segment => (:segment,), :bg_spec => (:energy,), :fg_spec => (:energy,)), coords=Dict(:fourier => 1:size(m,2), :segment => 1:n_segments, :energy => spec_bin_centers))

@@ -217,8 +217,9 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     # if possible.
     dmu_log_bg ~ Normal(0,1)
     mu_log_bg := mlbg + dmu_log_bg * (5*slbg / sqrt(length(segment_Ts)))
-    scaled_sigma_log_bg ~ Exponential(1)
-    sigma_log_bg := 2 * scaled_sigma_log_bg * slbg # Wider scale for sigma by a bit.
+    dlog_sigma_log_bg ~ Normal(0,1)
+    log_sigma_log_bg = log(slbg) + 10*dlog_sigma_log_bg / sqrt(length(segment_Ts))
+    sigma_log_bg := exp(log_sigma_log_bg)
 
     sigma_fg ~ transformed(Exponential(1), Bijectors.Scale(fg_scale))
 
