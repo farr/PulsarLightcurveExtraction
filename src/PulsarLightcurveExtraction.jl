@@ -206,9 +206,12 @@ typical amount of foreground that is reasonable).
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
 @model function spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_scale)
+    @assert size(design_matrix, 2) % 2 == 0 "Design matrix should have an even number of columns, with the first half being cosine terms and the second half sine terms."
+
     mlbg = mean(est_log_bg)
     slbg = std(est_log_bg)
     n_spec = maximum(event_spectral_indices)
+    n_fourier = round(Int, size(design_matrix, 2) / 2)
 
     # Transform variables so sampler sees unit-scale, but parameters have
     # physical scale.  No Jacobians needed because the transformation is based
@@ -219,7 +222,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     dmu_log_bg ~ Normal(0,1)
     mu_log_bg := mlbg + dmu_log_bg * (5*slbg / sqrt(length(segment_Ts)))
     dlog_sigma_log_bg ~ Normal(0,1)
-    log_sigma_log_bg = log(slbg) + 10*dlog_sigma_log_bg / sqrt(length(segment_Ts))
+    log_sigma_log_bg = log(slbg) + 10 * dlog_sigma_log_bg / sqrt(length(segment_Ts)) # Factor of 10 is a product of "5-sigma" prior and that an estimated standard error is 2/sqrt(N) (?? sqrt(2)/sqrt(N)?).
     sigma_log_bg := exp(log_sigma_log_bg)
 
     sigma_fg ~ transformed(Exponential(1), Bijectors.Scale(fg_scale))
@@ -232,8 +235,10 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     log_bg_segment := est_log_bg .+ est_log_bg_uncert .* log_dbg_segment
     bg_segment := exp.(log_bg_segment)
 
-    # Spectrum: probability of event being in each bin given bg or fg; flat, single-count Dirichlet priors.
-    fg_spec ~ Dirichlet(fill(1.0, maximum(event_spectral_indices)))
+    fg_spec ~ filldist(Dirichlet(fill(1.0, maximum(event_spectral_indices))), n_fourier)
+
+    fg_spec_matrix = fg_spec[event_spectral_indices, :]
+    fg_spec_matrix = cat(fg_spec_matrix, fg_spec_matrix, dims=2) # Duplicate so that we can multiply by the full design matrix (with both cos and sin terms).
 
     # This is a trick: we get the bijector to/from the probability space and the
     # unconstrained space.  Then in the unconstrained space, we put a
@@ -246,7 +251,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     dbg_spec ~ arraydist([Normal(0, 1) for _ in 1:(n_spec-1)]) # Last element is determined by the simplex constraint.
     bg_spec := bi(est_bg_spec .+ 5 .* est_bg_spec_uncert .* dbg_spec) 
 
-    rate_at_events = bg_segment[event_segment_indices] .* bg_spec[event_spectral_indices] .+ (design_matrix * fg_coeffs) .* fg_spec[event_spectral_indices]
+    rate_at_events = bg_segment[event_segment_indices] .* bg_spec[event_spectral_indices] .+ (design_matrix .* fg_spec_matrix) * fg_coeffs
     if any(rate_at_events .<= 0)
         Turing.@addlogprob! -Inf
     else

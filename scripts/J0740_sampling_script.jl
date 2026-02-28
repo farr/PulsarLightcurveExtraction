@@ -3,9 +3,9 @@ using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 
 ## Set up script parameters
-n_spec = 50
-n_segments = nothing # Do all segments
-n_fourier = 10
+n_spec = 32
+n_segments = nothing
+n_fourier = 4
 
 fg_scale = 5e-6 # Empirically determined fg rate estimate, based on not constraining the posterior too much.
 
@@ -14,7 +14,7 @@ n_mcmc = 1000
 
 target_arate = 0.8
 
-past_run = joinpath(@__DIR__, "..", "data", "J0740_trace.nc")
+past_run = nothing # joinpath(@__DIR__, "..", "data", "J0740_trace.nc")
 
 ## Set up distributed sampling
 using Distributed
@@ -135,7 +135,7 @@ else
 end
 
 ## Package it up
-trace = from_mcmcchains(chains; dims=Dict(:fg_coeffs => (:fourier,), :log_dbg_segment => (:segment,), :log_bg_segment => (:segment,), :bg_segment => (:segment,), :bg_spec => (:energy,), :fg_spec => (:energy,)), coords=Dict(:fourier => 1:size(m,2), :segment => 1:n_segments, :energy => spec_bin_centers))
+trace = from_mcmcchains(chains; dims=Dict(:fg_coeffs => (:fourier,), :log_dbg_segment => (:segment,), :log_bg_segment => (:segment,), :bg_segment => (:segment,), :bg_spec => (:energy,), :fg_spec => (:energy, :half_fourier)), coords=Dict(:fourier => 1:size(m,2), :half_fourier => 1:round(Int, size(m,2)/2),:segment => 1:n_segments, :energy => spec_bin_centers))
 
 ## Save the chains
 to_netcdf(trace, joinpath(@__DIR__, "..", "data", "J0740_trace.nc"))
