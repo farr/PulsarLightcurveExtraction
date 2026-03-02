@@ -26,10 +26,10 @@ end
 @everywhere begin
     using ArviZ
     using DimensionalData
+    using Enzyme
     using FITSIO
     using HDF5
     using LinearAlgebra
-    using Mooncake
     using NCDatasets
     using PulsarLightcurveExtraction
     using Turing
@@ -110,7 +110,7 @@ if past_run !== nothing
         push!(init_params, InitFromParams(
             (; dmu_log_bg = float(p[chain=At(c), draw=At(d)].dmu_log_bg[]), 
             dlog_sigma_log_bg = float(p[chain=At(c), draw=At(d)].dlog_sigma_log_bg[]), 
-            sigma_fg = float(p[chain=At(c), draw=At(d)].sigma_fg[]),
+            dsigma_fg = float(p[chain=At(c), draw=At(d)].sigma_fg[]) / fg_scale,
             fg_coeffs = vec(p[chain=At(c), draw=At(d)].fg_coeffs),
             log_dbg_segment = vec(p[chain=At(c), draw=At(d)].log_dbg_segment),
             fg_spec = vec(p[chain=At(c), draw=At(d)].fg_spec),
@@ -130,9 +130,9 @@ end
 
 ## Sample it
 if n_chain > 1
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), MCMCDistributed(), n_mcmc, n_chain; initial_params=init_params)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), MCMCDistributed(), n_mcmc, n_chain; initial_params=init_params)
 else
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), n_mcmc; initial_params=init_params)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), n_mcmc; initial_params=init_params)
 end
 
 ## Package it up

@@ -136,7 +136,7 @@ function spectral_indices(event_pi, n_spec)
     # Because we exp(range(log(...))), want to make sure the first and last bins are exactly min and max, to avoid any numerical issues with events that have PI values at the edges.
     bins[1] = min_pi
     bins[end] = max_pi 
-    
+
     event_spectral_indices = searchsortedfirst.(Ref(bins[2:end]), event_pi)
     return event_spectral_indices, bins
 end
@@ -244,17 +244,30 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     log_sigma_log_bg = log(slbg) + 10 * dlog_sigma_log_bg / sqrt(length(segment_Ts)) # Factor of 10 is a product of "5-sigma" prior and that an estimated standard error is 2/sqrt(N) (?? sqrt(2)/sqrt(N)?).
     sigma_log_bg := exp(log_sigma_log_bg)
 
-    sigma_fg ~ transformed(Exponential(1), Bijectors.Scale(fg_scale))
+    dsigma_fg ~ Exponential(1)
+    sigma_fg := fg_scale * dsigma_fg
 
-    fg_coeffs ~ filldist(transformed(Normal(0, 1), Bijectors.Scale(sigma_fg)), size(design_matrix, 2)) # Zero mean because we want an isotropic prior to give uniform phase coverage.
+    dfg_coeffs = Vector{Float64}(undef, size(design_matrix, 2))
+    for k in eachindex(dfg_coeffs)
+        dfg_coeffs[k] ~ Normal(0, 1)
+    end
+    fg_coeffs := sigma_fg .* dfg_coeffs # Exactly equivalent implied prior for fg_coeffs.
 
-    # log_bg_segment = est_log_bg .+ est_log_bg_uncert .* log_dbg_segment (i.e. log_dbg_segment measures the number of sigma away from the estimate)
-    # If log_bg_segment ~ Normal(mu_log_bg, sigma_log_bg), then log_dbg_segment ~ Normal((mu_log_bg .- est_log_bg) ./ est_log_bg_uncert, sigma_log_bg ./ est_log_bg_uncert)
-    log_dbg_segment ~ arraydist([Normal((mu_log_bg - est_log_bg[i]) / est_log_bg_uncert[i], sigma_log_bg / est_log_bg_uncert[i]) for i in 1:length(segment_Ts)])
+    # Same implied prior as the original arraydist parameterization; sampled in a
+    # scalar loop for Enzyme compatibility.
+    log_dbg_segment = Vector{Float64}(undef, length(segment_Ts))
+    for i in eachindex(log_dbg_segment)
+        m_i = (mu_log_bg - est_log_bg[i]) / est_log_bg_uncert[i]
+        s_i = sigma_log_bg / est_log_bg_uncert[i]
+        log_dbg_segment[i] ~ Normal(m_i, s_i)
+    end
     log_bg_segment := est_log_bg .+ est_log_bg_uncert .* log_dbg_segment
     bg_segment := exp.(log_bg_segment)
 
-    fg_spec ~ filldist(Dirichlet(fill(1.0, maximum(event_spectral_indices))), n_fourier)
+    fg_spec = Matrix{Float64}(undef, n_spec, n_fourier)
+    for k in 1:n_fourier
+        fg_spec[:, k] ~ Dirichlet(fill(1.0, n_spec))
+    end
 
     fg_spec_matrix = fg_spec[event_spectral_indices, :]
     fg_spec_matrix = cat(fg_spec_matrix, fg_spec_matrix, dims=2) # Duplicate so that we can multiply by the full design matrix (with both cos and sin terms).
@@ -267,14 +280,37 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     d = Dirichlet(fill(1.0, maximum(event_spectral_indices)))
     b = bijector(d)
     bi = inverse(b)
-    dbg_spec ~ arraydist([Normal(0, 1) for _ in 1:(n_spec-1)]) # Last element is determined by the simplex constraint.
+    dbg_spec = Vector{Float64}(undef, n_spec-1) # Last element is determined by the simplex constraint.
+    for i in eachindex(dbg_spec)
+        dbg_spec[i] ~ Normal(0, 1)
+    end
     bg_spec := bi(est_bg_spec .+ 5 .* est_bg_spec_uncert .* dbg_spec) 
 
-    rate_at_events = bg_segment[event_segment_indices] .* bg_spec[event_spectral_indices] .+ (design_matrix .* fg_spec_matrix) * fg_coeffs
-    if any(rate_at_events .<= 0)
+    has_nonpositive_rate = false
+    log_events = zero(eltype(bg_segment))
+    for i in eachindex(event_segment_indices)
+        segi = event_segment_indices[i]
+        speci = event_spectral_indices[i]
+
+        rate_i = bg_segment[segi] * bg_spec[speci]
+        for k in 1:n_fourier
+            spec_w = fg_spec[speci, k]
+            rate_i += design_matrix[i, k] * fg_coeffs[k] * spec_w
+            rate_i += design_matrix[i, n_fourier + k] * fg_coeffs[n_fourier + k] * spec_w
+        end
+
+        if rate_i <= 0
+            has_nonpositive_rate = true
+        else
+            log_events += log(rate_i)
+        end
+    end
+
+    if has_nonpositive_rate
+        # Cannot have negative rate!
         Turing.@addlogprob! -Inf
     else
-        Turing.@addlogprob! sum(log.(rate_at_events)) - sum(bg_segment .* segment_Ts)
+        Turing.@addlogprob! log_events - sum(bg_segment .* segment_Ts)
     end
 end
 
