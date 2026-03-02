@@ -2,8 +2,11 @@ module PulsarLightcurveExtraction
 
 using ArviZ
 using Bijectors
+using Colors
+using DimensionalData
 using Distributions
 using LinearAlgebra
+using Makie
 using Turing
 
 export PI_TO_KEV
@@ -14,6 +17,8 @@ export estimate_bg_spec
 export spectral_indices
 export spec_fourier_model
 export rebin_energy
+export husl_wheel
+export traceplot
 
 """ 
     PI_TO_KEV
@@ -42,7 +47,7 @@ of the segment each event belongs to.
 """
 function segment_indices(times, segment_starts, segment_ends)
     segment_indices = searchsortedfirst.((segment_starts,), times) .- 1
-    @assert all(times .< segment_ends[segment_indices])
+    @assert all((times .< segment_ends[segment_indices]) .&& (times .>= segment_starts[segment_indices])) "Some events do not fall within any segment."
 
     return segment_indices
 end
@@ -140,9 +145,12 @@ The background is modeled as a constant rate of detected photons in each
 observing segment (observations are segmented according to discrete observing
 intervals on the ISS).  The foreground is modeled as a linear combination of the
 basis functions that comprise the columns of the design matrix.  Both background
-and foreground are also decomposed spectrally, by probability-per-energy-bin.
-So, in segment ``i``, the background detection rate in energy bin ``j`` is given
-by 
+and foreground are also decomposed spectrally, by probability-per-energy-bin
+(the background is assumed to be spectrally constant---not a good assumption,
+but it likely doesn't matter much for the fit, and makes things a lot
+easier---while each foreground Fourier component gets its own spectral
+decomposition). So, in segment ``i``, the background detection rate in energy
+bin ``j`` is given by 
 
 ``\frac{\mathrm{d} N}{\mathrm{d} t} = B_i p^{\mathrm{bg}}_j``
 
@@ -150,7 +158,8 @@ for all photons that arrive in segment ``i``.  The foreground detection rate
 varies by photon arrival phase relative to the radio pulse of the neutron star,
 and is given at the arrival time of photon ``i`` by 
 
-``\frac{\mathrm{d} N}{\mathrm{d} t_i} = p^{\mathrm{fg}}_j \sum_{k} M_{ik} A_k``
+``\frac{\mathrm{d} N}{\mathrm{d} t_i} = \sum_{k} M_{ik} A_k p^{\mathrm{fg},k}_j
+``
 
 for basis function coefficients ``A_k``.  The model assumes that the basis
 functions integrate to zero over the pulsar phase (as would be expected for a
@@ -177,7 +186,12 @@ estimates of the set of coefficients collectively.
 The phase-varying parts of the model are encoded in the `design_matrix` which
 should have shape `n_photons, n_components`, where `n_components` is the number
 of basis functions used to model the phase curve (e.g., Fourier components; see
-`cos_sin_matrices` above).  
+`cos_sin_matrices` above).  If the design matrix incorporates the sensitive area
+of the detector for each photon (e.g. by multiplying the corresponding row by
+the effective area at the PI energy for that photon), then the foreground
+coefficients will be in units of counts per square cm per second, and the
+`fg_scale` parameter should be set according to the typical amount of foreground
+that is reasonable in those units.
 
 `event_segment_indices` gives the background segment in which each photon falls.
 
@@ -259,8 +273,6 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     end
 end
 
-using DimensionalData
-
 """
     rebin_energy(fspec; bins_per=2, keep_partial=true)
 
@@ -305,5 +317,63 @@ function rebin_energy(fspec; bins_per::Int=2, keep_partial::Bool=true)
     return DimArray(B, newdims)
 end
 
+"""
+    husl_wheel(n)
+
+Produce a color wheel of `n` "distinguishable" colors in the LCHuv color space,
+which is designed to be perceptually uniform.  This can be used for plotting
+multiple chains in a traceplot, for example.
+"""
+function husl_wheel(n)
+    return [LCHuv(65, 90, h) for h in range(0, stop=360, length=n+1)][1:end-1]
+end
+
+"""
+    traceplot(chain; var_names=nothing)
+
+Produce a traceplot of the posterior samples in `chain`, which is an ArviZ trace
+object.  If `var_names` is provided, only plot those variables; otherwise, plot
+all variables in the posterior.  The traceplot shows the marginal density of
+each variable across all chains (left column) and the trace of each variable
+across iterations for each chain (right column), with different colors for
+different chains.
+"""
+function traceplot(chain; var_names=nothing)
+    p = chain.posterior
+
+    if var_names != nothing
+        vars = var_names
+    else
+        vars = keys(p)
+    end
+
+    f = Figure(size=(800, 200*length(vars)))
+    for (i, var) in enumerate(vars)
+        zs = p[var]
+        c = dims(zs, :chain)
+        ds = otherdims(zs, (:chain, :draw))
+        
+        all_ds = (c, ds...)
+
+        zs_merge = mergedims(zs, all_ds => :merged_chain)
+        n = size(zs_merge, :merged_chain)
+
+        adens = Axis(f[i,1], xlabel=String(var), palette=(color = husl_wheel(n), patchcolor = husl_wheel(n),))
+        atrace = Axis(f[i,2], xlabel="Iteration", ylabel=String(var), palette=(color = husl_wheel(n), patchcolor = husl_wheel(n),))
+
+        for c in dims(zs_merge, :merged_chain)
+            z = vec(zs_merge[merged_chain=At(c)])
+
+            # h_est = 3.5 * (quantile(z, 0.84) - quantile(z, 0.16)) / 2 / length(z)^(1/3) # Scott's rule, replacing std with equivalent quantile range
+            # n_bins = ceil(Int, (maximum(z) - minimum(z)) / h_est)
+
+            # hist!(adens, vec(z); bins=n_bins, label=nothing, norm=:pdf)
+            density!(adens, vec(z); label=nothing)
+            lines!(atrace, vec(z); label=nothing)
+        end
+    end
+
+    return f
+end
 
 end # module PulsarLightcurveExtraction
