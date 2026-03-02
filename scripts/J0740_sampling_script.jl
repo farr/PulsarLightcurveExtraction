@@ -3,13 +3,13 @@ using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 
 ## Set up script parameters
-n_spec = 32
+n_spec = 16
 n_segments = nothing
 n_fourier = 4
 
 fg_scale = 5e-6 # Empirically determined fg rate estimate, based on not constraining the posterior too much.
 
-n_chain = 4
+n_chain = 8
 n_mcmc = 1000
 
 target_arate = 0.8
@@ -64,7 +64,8 @@ event_segment_indices = PulsarLightcurveExtraction.segment_indices(event_time, s
 event_areas = PulsarLightcurveExtraction.event_areas(event_time, event_pi, arf_start, arf_stop, arf_e_low, arf_e_high, arf_response);
 event_spectral_indices, spec_bins_pi = PulsarLightcurveExtraction.spectral_indices(event_pi, n_spec)
 
-spec_bin_centers = 0.5 .* (spec_bins_pi[1:end-1] .+ spec_bins_pi[2:end]) .* PulsarLightcurveExtraction.PI_TO_KEV
+# Logarithmic bins assumed!
+spec_bin_centers = sqrt.(spec_bins_pi[1:end-1] .* spec_bins_pi[2:end]) .* PulsarLightcurveExtraction.PI_TO_KEV
 
 # Scale design matrix by event areas, so that the fg_coeffs are in units of counts per square cm per second.
 m = m .* reshape(event_areas, (:, 1))

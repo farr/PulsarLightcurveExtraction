@@ -131,7 +131,12 @@ for each event and the bin edges in PI.
 function spectral_indices(event_pi, n_spec)
     min_pi = minimum(event_pi)
     max_pi = maximum(event_pi)
-    bins = range(min_pi, stop=max_pi, length=n_spec+1)
+    bins = exp.(range(log(min_pi), stop=log(max_pi), length=n_spec+1))
+
+    # Because we exp(range(log(...))), want to make sure the first and last bins are exactly min and max, to avoid any numerical issues with events that have PI values at the edges.
+    bins[1] = min_pi
+    bins[end] = max_pi 
+    
     event_spectral_indices = searchsortedfirst.(Ref(bins[2:end]), event_pi)
     return event_spectral_indices, bins
 end
