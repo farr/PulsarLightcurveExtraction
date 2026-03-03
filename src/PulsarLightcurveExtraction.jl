@@ -264,13 +264,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     log_bg_segment := est_log_bg .+ est_log_bg_uncert .* log_dbg_segment
     bg_segment := exp.(log_bg_segment)
 
-    fg_spec = Matrix{Float64}(undef, n_spec, n_fourier)
-    for k in 1:n_fourier
-        fg_spec[:, k] ~ Dirichlet(fill(1.0, n_spec))
-    end
-
-    fg_spec_matrix = fg_spec[event_spectral_indices, :]
-    fg_spec_matrix = cat(fg_spec_matrix, fg_spec_matrix, dims=2) # Duplicate so that we can multiply by the full design matrix (with both cos and sin terms).
+    fg_spec ~ filldist(Dirichlet(fill(1.0, n_spec)), n_fourier)
 
     # This is a trick: we get the bijector to/from the probability space and the
     # unconstrained space.  Then in the unconstrained space, we put a
