@@ -4,13 +4,13 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 
 ## Set up script parameters
 n_spec = 16
-n_segments = 100 # nothing
+n_segments = nothing
 n_fourier = 4
 
 fg_const_scale = 5e-4 # Empirically determined fg rate estimate.
 fg_scale = 5e-6 # Empirically determined fg rate estimate, based on not constraining the posterior too much.
 
-n_chain = 1 # 8
+n_chain = 8
 n_mcmc = 1000
 
 target_arate = 0.8
