@@ -15,6 +15,7 @@ export event_areas
 export estimate_log_bg
 export estimate_bg_spec
 export spectral_indices
+export energy_bin_exposure
 export spec_fourier_model
 export rebin_energy
 export husl_wheel
@@ -141,8 +142,45 @@ function spectral_indices(event_pi, n_spec)
     return event_spectral_indices, bins
 end
 
+"""
+    energy_bin_exposure(spec_bins, segment_starts, segment_ends, arf_starts, arf_ends, arf_e_low, arf_e_high, arf_area)
+
+Returns the exposure (time * mean effective area) for each energy bin, computed
+by integrating over the observing segments and the ARF.  This is used to compute
+the expected number of counts from the constant term in the foreground, which is
+given by the sum over energy bins of the foreground constant amplitude times the
+foreground constant spectrum times the energy bin exposure.
+"""
+function energy_bin_exposure(spec_bins, segment_starts, segment_ends, arf_starts, arf_ends, arf_e_low, arf_e_high, arf_area)
+    exposures = zeros(Float64, length(spec_bins)-1)
+
+    for i in eachindex(segment_starts)
+        start = segment_starts[i]
+        stop = segment_ends[i]
+
+        iarf_start = searchsortedfirst(arf_ends, start)
+        iarf_stop = searchsortedfirst(arf_ends, stop)
+        @assert iarf_start == iarf_stop "Segment $i overlaps multiple ARF intervals, which is not currently supported."
+
+        for j in eachindex(exposures)
+            pi_low = spec_bins[j]
+            pi_high = spec_bins[j+1]
+
+            e_low = PI_TO_KEV * pi_low
+            e_high = PI_TO_KEV * pi_high
+
+            jarf_low = searchsortedfirst(arf_e_high, e_low)
+            jarf_high = searchsortedfirst(arf_e_high, e_high)
+
+            exposures[j] += (stop - start) * mean(arf_area[jarf_low:jarf_high, iarf_start])
+        end
+    end
+
+    exposures
+end
+
 raw"""
-    spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_scale)
+    spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, event_sensitive_areas, segment_Ts, energy_bin_exposure, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_const_scale, fg_scale)
 
 A spectral-photometric model for a pulsar phasecurve with a varying background.
 
@@ -163,30 +201,39 @@ for all photons that arrive in segment ``i``.  The foreground detection rate
 varies by photon arrival phase relative to the radio pulse of the neutron star,
 and is given at the arrival time of photon ``i`` by 
 
-``\frac{\mathrm{d} N}{\mathrm{d} t_i} = \sum_{k} M_{ik} A_k p^{\mathrm{fg},k}_j
-``
+``\frac{\mathrm{d} N}{\mathrm{d} t_i} = \mathrm{Area}_i \left( A_\mathrm{const}
+p^{\mathrm{fg},\mathrm{const}}_j + \sum_{k} M_{ik} A_k p^{\mathrm{fg},k}_j
+\right) ``
 
-for basis function coefficients ``A_k``.  The model assumes that the basis
-functions integrate to zero over the pulsar phase (as would be expected for a
-Fourier decomposition, for example), so that the total expected photon count
-over all segments is given by 
+for basis function coefficients ``A_k`` plus a constant term,
+``A_\mathrm{const}``.  ``\mathrm{Area}_i`` is the effective area for the arrival
+of the ``i``th photon.  
 
-``N_\mathrm{exp} = \sum_i B_i T_i``
+The model assumes that the basis functions integrate to zero over the pulsar
+phase (as would be expected for a Fourier decomposition, for example).  The
+`energy_bin_exposure` is the time-and-mean-area associated with each energy bin
+to compute the expected number of counts from the constant term in the
+foreground; so that the total expected photon count over all segments is given
+by 
 
-with ``T_i`` the observing time of segment ``i``.  The model fits the background
-count rates ``B_i``, the foreground basis function coefficients ``A_k``, and the
-foreground and background spectra ``p^{\mathrm{bg}/\mathrm{fg}}_j`` as
-parameters.  The fit is performed using a hierarchical model with partial
-pooling (sometimes also called a "random effects" model in a regression
-context), where the background rates ``B_i`` are given a normal prior with a
-mean and s.d. that are, in turn, parameters; and the foreground basis function
-coefficients ``A_k`` are given a zero-mean normal prior with a s.d. that is, in
-turn, a model parameter (zero mean because we imagine that the design matrix
-columns are the sin and cos components of a Fourier basis, and we want an
-isotropic prior in phase).  Allowing the mean and s.d. of these priors to be
-parameters lets the model learn the typical background and the dispersion of the
-background and foreground coefficients and use this information to inform the
-estimates of the set of coefficients collectively.
+``N_\mathrm{exp} = \sum_i B_i T_i + A_\mathrm{const} \sum_j
+p^{\mathrm{fg},\mathrm{const}}_j E_j``
+
+with ``T_i`` the observing time of segment ``i``, and ``E_j`` the exposure for
+energy bin ``j``.  The model fits the background count rates ``B_i``, the
+foreground basis function coefficients ``A_k``, and the foreground and
+background spectra ``p^{\mathrm{bg}/\mathrm{fg}}_j`` as parameters.  The fit is
+performed using a hierarchical model with partial pooling (sometimes also called
+a "random effects" model in a regression context), where the background rates
+``B_i`` are given a normal prior with a mean and s.d. that are, in turn,
+parameters; and the foreground basis function coefficients ``A_k`` are given a
+zero-mean normal prior with a s.d. that is, in turn, a model parameter (zero
+mean because we imagine that the design matrix columns are the sin and cos
+components of a Fourier basis, and we want an isotropic prior in phase).
+Allowing the mean and s.d. of these priors to be parameters lets the model learn
+the typical background and the dispersion of the background and foreground
+coefficients and use this information to inform the estimates of the set of
+coefficients collectively.
 
 The phase-varying parts of the model are encoded in the `design_matrix` which
 should have shape `n_photons, n_components`, where `n_components` is the number
@@ -216,6 +263,10 @@ quantities.
 spectrum, which is also extremely well-determined (by many thousands of counts
 per bin); see `estimate_bg_spec` above to produce these quantities.
 
+`fg_const_scale` is used to set a prior on the constant part of the foreground,
+and should be an estimate of the typical counts per square cm per second in the
+constant part of the foreground.
+
 `fg_scale` is used to set a prior on the foreground dispersion parameter,
 `sigma_fg` (if, for example, the design matrix carries units of effective area,
 with sin and cos modulations according to a Fourier basis, then the ``A_k`` have
@@ -224,7 +275,7 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_scale)
+@model function spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, event_sensitive_areas, segment_Ts, energy_bin_exposure, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_const_scale, fg_scale)
     @assert size(design_matrix, 2) % 2 == 0 "Design matrix should have an even number of columns, with the first half being cosine terms and the second half sine terms."
 
     mlbg = mean(est_log_bg)
@@ -252,6 +303,10 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         dfg_coeffs[k] ~ Normal(0, 1)
     end
     fg_coeffs := sigma_fg .* dfg_coeffs # Exactly equivalent implied prior for fg_coeffs.
+    
+    dlog_fg_coeff_const ~ Normal(0, 2) # About factor of ten 1-sigma uncertainty---it's broad
+    log_fg_coeff_const := log(fg_const_scale) + dlog_fg_coeff_const # Guess at the constant amplitude
+    fg_coeff_const := exp(log_fg_coeff_const)
 
     # Same implied prior as the original arraydist parameterization; sampled in a
     # scalar loop for Enzyme compatibility.
@@ -264,6 +319,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     log_bg_segment := est_log_bg .+ est_log_bg_uncert .* log_dbg_segment
     bg_segment := exp.(log_bg_segment)
 
+    fg_spec_const ~ Dirichlet(fill(1.0, n_spec))
     fg_spec ~ filldist(Dirichlet(fill(1.0, n_spec)), n_fourier)
 
     # This is a trick: we get the bijector to/from the probability space and the
@@ -285,14 +341,18 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     for i in eachindex(event_segment_indices)
         segi = event_segment_indices[i]
         speci = event_spectral_indices[i]
+        areai = event_sensitive_areas[i]
 
-        rate_i = bg_segment[segi] * bg_spec[speci]
+        rate_i = fg_coeff_const * fg_spec_const[speci]
         for k in 1:n_fourier
             spec_w = fg_spec[speci, k]
             rate_i += design_matrix[i, k] * fg_coeffs[k] * spec_w
             rate_i += design_matrix[i, n_fourier + k] * fg_coeffs[n_fourier + k] * spec_w
         end
+        rate_i *= areai
 
+        rate_i += bg_segment[segi] * bg_spec[speci]
+        
         if rate_i <= 0
             has_nonpositive_rate = true
         else
@@ -304,7 +364,10 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         # Cannot have negative rate!
         Turing.@addlogprob! -Inf
     else
-        Turing.@addlogprob! log_events - sum(bg_segment .* segment_Ts)
+        bg_count = sum(bg_segment .* segment_Ts)
+        fg_count = fg_coeff_const * sum(fg_spec_const .* energy_bin_exposure)
+
+        Turing.@addlogprob! log_events - bg_count - fg_count
     end
 end
 

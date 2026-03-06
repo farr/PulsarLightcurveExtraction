@@ -4,17 +4,16 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 
 ## Set up script parameters
 n_spec = 16
-n_segments = nothing
+n_segments = 100 # nothing
 n_fourier = 4
 
+fg_const_scale = 5e-4 # Empirically determined fg rate estimate.
 fg_scale = 5e-6 # Empirically determined fg rate estimate, based on not constraining the posterior too much.
 
-n_chain = 8
+n_chain = 1 # 8
 n_mcmc = 1000
 
 target_arate = 0.8
-
-past_run = nothing # joinpath(@__DIR__, "..", "data", "J0740_trace.nc")
 
 ## Set up distributed sampling
 using Distributed
@@ -67,9 +66,6 @@ event_spectral_indices, spec_bins_pi = PulsarLightcurveExtraction.spectral_indic
 # Logarithmic bins assumed!
 spec_bin_centers = sqrt.(spec_bins_pi[1:end-1] .* spec_bins_pi[2:end]) .* PulsarLightcurveExtraction.PI_TO_KEV
 
-# Scale design matrix by event areas, so that the fg_coeffs are in units of counts per square cm per second.
-m = m .* reshape(event_areas, (:, 1))
-
 ## Cut down the samples, if necessary
 if n_segments !== nothing
     event_sel = event_segment_indices .<= n_segments
@@ -87,6 +83,9 @@ else
     n_segments = length(segment_start)
 end
 
+## Total exposure over all segments in use
+energy_bin_exposures = PulsarLightcurveExtraction.energy_bin_exposure(spec_bins_pi, segment_start, segment_stop, arf_start, arf_stop, arf_e_low, arf_e_high, arf_response)
+
 ## Estimate helper quantities from the background
 est_log_bg, est_log_bg_uncert = PulsarLightcurveExtraction.estimate_log_bg(event_time, segment_start, segment_stop)
 
@@ -96,47 +95,23 @@ std_est_log_bg = std(est_log_bg)
 est_bg_spec, est_bg_spec_uncert = PulsarLightcurveExtraction.estimate_bg_spec(event_spectral_indices)
 
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(m, event_segment_indices, event_spectral_indices, segment_Ts, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_scale)
-
-## Find good initialization points
-if past_run !== nothing
-    println("Loading past run from $past_run to find good initial points...")
-    past_trace = from_netcdf(past_run)
-    p = past_trace.posterior
-    init_params = []
-    for _ in 1:n_chain
-        c = rand(span(dims(p, :chain)))
-        d = rand(span(dims(p, :draw)))
-        push!(init_params, InitFromParams(
-            (; dmu_log_bg = float(p[chain=At(c), draw=At(d)].dmu_log_bg[]), 
-            dlog_sigma_log_bg = float(p[chain=At(c), draw=At(d)].dlog_sigma_log_bg[]), 
-            dsigma_fg = float(p[chain=At(c), draw=At(d)].sigma_fg[]) / fg_scale,
-            fg_coeffs = vec(p[chain=At(c), draw=At(d)].fg_coeffs),
-            log_dbg_segment = vec(p[chain=At(c), draw=At(d)].log_dbg_segment),
-            fg_spec = vec(p[chain=At(c), draw=At(d)].fg_spec),
-            dbg_spec = vec(p[chain=At(c), draw=At(d)].dbg_spec))
-        ))
-    end
-else
-    init_params = [InitFromUniform(-2.0, 2.0) for _ in 1:n_chain]
-end
+model = PulsarLightcurveExtraction.spec_fourier_model(m, event_segment_indices, event_spectral_indices, event_areas, segment_Ts, energy_bin_exposures, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_const_scale,fg_scale)
 
 if n_chain > 1
     println("Running with $n_chain chains in distributed mode...")
 else
-    println("Running with a single chain, extracting single init_params out of 1-element vector...")
-    init_params = init_params[1]
+    println("Running with a single chain.")
 end
 
 ## Sample it
 if n_chain > 1
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), MCMCDistributed(), n_mcmc, n_chain; initial_params=init_params)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), MCMCDistributed(), n_mcmc, n_chain)
 else
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), n_mcmc; initial_params=init_params)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), n_mcmc)
 end
 
 ## Package it up
-trace = from_mcmcchains(chains; dims=Dict(:fg_coeffs => (:fourier,), :log_dbg_segment => (:segment,), :log_bg_segment => (:segment,), :bg_segment => (:segment,), :bg_spec => (:energy,), :fg_spec => (:energy, :half_fourier)), coords=Dict(:fourier => 1:size(m,2), :half_fourier => 1:round(Int, size(m,2)/2),:segment => 1:n_segments, :energy => spec_bin_centers))
+trace = from_mcmcchains(chains; dims=Dict(:fg_coeffs => (:fourier,), :log_dbg_segment => (:segment,), :log_bg_segment => (:segment,), :bg_segment => (:segment,), :bg_spec => (:energy,), :fg_spec_const => (:energy,), :fg_spec => (:energy, :half_fourier)), coords=Dict(:fourier => 1:size(m,2), :half_fourier => 1:round(Int, size(m,2)/2),:segment => 1:n_segments, :energy => spec_bin_centers))
 
 ## Save the chains
 to_netcdf(trace, joinpath(@__DIR__, "..", "data", "J0740_trace.nc"))
