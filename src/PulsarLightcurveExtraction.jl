@@ -278,28 +278,49 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, event_sensitive_areas, segment_Ts, energy_bin_exposure, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, mu_log_fg_const, sigma_log_fg_const, fg_scale)
+@model function spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, event_sensitive_areas, segment_Ts, energy_bin_exposure, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_scale)
     @assert size(design_matrix, 2) % 2 == 0 "Design matrix should have an even number of columns, with the first half being cosine terms and the second half sine terms."
 
-    mlbg = mean(est_log_bg)
-    slbg = std(est_log_bg)
+    lbg = mean(est_log_bg)
+    lbg_scale = 1 / sqrt(length(segment_Ts)) # Uncertainty on the mean log background rate estimate, which we use to set the scale of the prior on the mean log background rate.
+
+    log_slbg = log(std(est_log_bg))
+    log_slbg_scale = sqrt(2) / sqrt(length(segment_Ts)) # Uncertainty on the standard deviation of the log background rate estimate, which we use to set the scale of the prior on the standard deviation of the log background rate.
+
+    lfg = log(size(design_matrix,1) / mean(energy_bin_exposure)) # Assume a flat spectrum per energy bin, and attribute all counts to the fg (this is just for scaling)
+    lfg_scale = 1/sqrt(size(design_matrix,1)) # Uncertainty on the log of the foreground rate estimate, assuming all counts are from the foreground and ignoring the background (this is just for scaling)
+
     n_spec = maximum(event_spectral_indices)
     n_fourier = round(Int, size(design_matrix, 2) / 2)
 
-    # Transform variables so sampler sees unit-scale, but parameters have
-    # physical scale.  No Jacobians needed because the transformation is based
-    # only on data.  Was trying to do this with Bijectors.Shift and
-    # Bijectors.scale, but Mooncake errored out on the AutoDiff with that for
-    # some reason.  TODO: bring this back to Bijectors.shift and Bijectors.scale
-    # if possible.
-    dmu_log_bg ~ Normal(0,1)
-    mu_log_bg := mlbg + dmu_log_bg * (5*slbg / sqrt(length(segment_Ts)))
-    dlog_sigma_log_bg ~ Normal(0,1)
-    log_sigma_log_bg = log(slbg) + 10 * dlog_sigma_log_bg / sqrt(length(segment_Ts)) # Factor of 10 is a product of "5-sigma" prior and that an estimated standard error is 2/sqrt(N) (?? sqrt(2)/sqrt(N)?).
-    sigma_log_bg := exp(log_sigma_log_bg)
+    # We want to put a broad, N(mlbg, 2) prior on the mean log background rate
+    # (i.e. 1-sigma uncertainty is a factor of 10).  But the sampler wants to
+    # see unit-scale variables, centered around zero.  So we shift and scale,
+    # defining mu_log_bg = mlbg + dmu_log_bg * lbg_scale.  If mu_log_bg ~
+    # N(mlbg, 2), then dmu_log_bg ~ N(0, 2/lbg_scale).
+    dmu_log_bg ~ Normal(0, 2/lbg_scale)
+    mu_log_bg := lbg + dmu_log_bg * lbg_scale # So mu_log_bg ~ N(mlbg, 2), which is what we want.
+
+    # We want to put a broad Exp(2) prior on sigma_log_bg; but the sampler wants
+    # to see unit-scale variables, centered around zero.  So we define
+    # sigma_log_bg = exp(log_sigma_log_bg), and then log_sigma_log_bg = log_slbg
+    # + dlog_sigma_log_bg * log_slbg_scale.  If sigma_log_bg ~ Exp(1), then
+    #   dlog_sigma_log_bg is Exp(1) * sigma_log_bg * log_slbg_scale.  
+    dlog_sigma_log_bg ~ Flat()
+    log_sigma_log_bg = log_slbg + dlog_sigma_log_bg * log_slbg_scale
+    sigma_log_bg := exp(log_sigma_log_bg) 
+    Turing.@addlogprob! logpdf(Exponential(1), sigma_log_bg) + log_sigma_log_bg + log(log_slbg_scale)
 
     dsigma_fg ~ Exponential(1)
     sigma_fg := fg_scale * dsigma_fg
+
+    # Here, again, we need some shifting-and-scaling.  We want a broad N(lfg, 2)
+    # prior on the constant part of the foreground (1-sigma ~ factor-of-ten),
+    # but we want the sampler to see a unit-scale variable centered around zero.
+    # So: log_fg_coeff_const = lfg + dlog_fg_coeff_const * lfg_scale.  If log_fg_coeff_const ~ N(lfg, 2), then dlog_fg_coeff_const ~ N(0, 2/lfg_scale).
+    dlog_fg_coeff_const ~ Normal(0, 2/lfg_scale)
+    log_fg_coeff_const := lfg + dlog_fg_coeff_const * lfg_scale
+    fg_coeff_const := exp(log_fg_coeff_const)
 
     dfg_coeffs = Vector{Float64}(undef, size(design_matrix, 2))
     for k in eachindex(dfg_coeffs)
@@ -307,10 +328,6 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     end
     fg_coeffs := sigma_fg .* dfg_coeffs # Exactly equivalent implied prior for fg_coeffs.
     
-    dlog_fg_coeff_const ~ Normal(0, 1) # About factor of ten 1-sigma uncertainty---it's broad
-    log_fg_coeff_const := mu_log_fg_const + dlog_fg_coeff_const * sigma_log_fg_const # So log_fg_coeff_const ~ N(mu_log_fg_const, sigma_log_fg_const), which is what we want.
-    fg_coeff_const := exp(log_fg_coeff_const)
-
     # Same implied prior as the original arraydist parameterization; sampled in a
     # scalar loop for Enzyme compatibility.
     log_dbg_segment = Vector{Float64}(undef, length(segment_Ts))
@@ -322,22 +339,34 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     log_bg_segment := est_log_bg .+ est_log_bg_uncert .* log_dbg_segment
     bg_segment := exp.(log_bg_segment)
 
-    fg_spec_const ~ Dirichlet(fill(1.0, n_spec))
-    fg_spec ~ filldist(Dirichlet(fill(1.0, n_spec)), n_fourier)
-
     # This is a trick: we get the bijector to/from the probability space and the
-    # unconstrained space.  Then in the unconstrained space, we put a
-    # N(est_bg_spec, 5*est_bg_spec_uncert), and transform back to probability
-    # space.  That way the sampler sees variables that are ~unit scale even
-    # though the background spectrum is very precisely measured.
+    # unconstrained space.  In the unconstrained space, we shift-and-scale so
+    # that the sampler should see a unit-scale distribution near zero (the bg
+    # spectrum and the average fg spectrum are tightly constrained, so this
+    # re-scaling is necessary).  But we want the prior ultimately to be
+    # Dirichlet(1-vector); the prior on the shifted-and-scaled variables is
+    # Dirirchlet(1-vector)(bg_spec) * dirichlet_jacobian(bg_spec) *
+    # est_bg_spec_uncert
     d = Dirichlet(fill(1.0, maximum(event_spectral_indices)))
     b = bijector(d)
     bi = inverse(b)
     dbg_spec = Vector{Float64}(undef, n_spec-1) # Last element is determined by the simplex constraint.
     for i in eachindex(dbg_spec)
-        dbg_spec[i] ~ Normal(0, 1)
+        dbg_spec[i] ~ Flat() # Will put in a prior manually.
     end
-    bg_spec := bi(est_bg_spec .+ 5 .* est_bg_spec_uncert .* dbg_spec) 
+    bg_spec := bi(est_bg_spec .+ est_bg_spec_uncert .* dbg_spec)
+    Turing.@addlogprob! logpdf(d, bg_spec) - logabsdetjac(b, bg_spec) + sum(log.(est_bg_spec_uncert))
+
+    # For the variable part of the fg spectrum, we just put a broad, flat prior.
+    fg_spec ~ filldist(Dirichlet(fill(1.0, n_spec)), n_fourier)
+
+    # For the constant part of the fg spectrum, we use the same trick as the for the background spectrum.
+    dfg_spec_const = Vector{Float64}(undef, n_spec-1)
+    for i in eachindex(dfg_spec_const)
+        dfg_spec_const[i] ~ Flat()
+    end
+    fg_spec_const := bi(est_bg_spec .+ est_bg_spec_uncert .* dfg_spec_const)
+    Turing.@addlogprob! logpdf(d, fg_spec_const) - logabsdetjac(b, fg_spec_const) + sum(log.(est_bg_spec_uncert))
 
     has_nonpositive_rate = false
     log_events = zero(eltype(bg_segment))
