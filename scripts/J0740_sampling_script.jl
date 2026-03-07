@@ -4,10 +4,11 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 
 ## Set up script parameters
 n_spec = 16
-n_segments = nothing
+n_segments = 1000 # nothing
 n_fourier = 4
 
-fg_const_scale = 5e-4 # Empirically determined fg rate estimate.
+mu_log_fg_const = -7.695 # Measured with 100 segments
+sigma_log_fg_const = 0.017 # Measured with 100 segments
 fg_scale = 5e-6 # Empirically determined fg rate estimate, based on not constraining the posterior too much.
 
 n_chain = 8
@@ -95,7 +96,7 @@ std_est_log_bg = std(est_log_bg)
 est_bg_spec, est_bg_spec_uncert = PulsarLightcurveExtraction.estimate_bg_spec(event_spectral_indices)
 
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(m, event_segment_indices, event_spectral_indices, event_areas, segment_Ts, energy_bin_exposures, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_const_scale,fg_scale)
+model = PulsarLightcurveExtraction.spec_fourier_model(m, event_segment_indices, event_spectral_indices, event_areas, segment_Ts, energy_bin_exposures, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, mu_log_fg_const, sigma_log_fg_const, fg_scale)
 
 if n_chain > 1
     println("Running with $n_chain chains in distributed mode...")

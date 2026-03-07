@@ -180,7 +180,7 @@ function energy_bin_exposure(spec_bins, segment_starts, segment_ends, arf_starts
 end
 
 raw"""
-    spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, event_sensitive_areas, segment_Ts, energy_bin_exposure, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_const_scale, fg_scale)
+    spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, event_sensitive_areas, segment_Ts, energy_bin_exposure, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, mu_log_fg_const, sigma_log_fg_const, fg_scale)
 
 A spectral-photometric model for a pulsar phasecurve with a varying background.
 
@@ -263,9 +263,12 @@ quantities.
 spectrum, which is also extremely well-determined (by many thousands of counts
 per bin); see `estimate_bg_spec` above to produce these quantities.
 
-`fg_const_scale` is used to set a prior on the constant part of the foreground,
-and should be an estimate of the typical counts per square cm per second in the
-constant part of the foreground.
+`mu_log_fg_const` and `sigma_log_fg_const` are used to set a prior on the
+constant part of the foreground, and should be estimates of the expected log
+counts per square cm per second in the constant part of the foreground, and the
+uncertainty on that estimate.  This is used to help guide the sampler to the
+region of parameter space where the foreground is reasonably consistent with the
+data, which can help it to more efficiently explore the posterior density.
 
 `fg_scale` is used to set a prior on the foreground dispersion parameter,
 `sigma_fg` (if, for example, the design matrix carries units of effective area,
@@ -275,7 +278,7 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, event_sensitive_areas, segment_Ts, energy_bin_exposure, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, fg_const_scale, fg_scale)
+@model function spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, event_sensitive_areas, segment_Ts, energy_bin_exposure, est_log_bg, est_log_bg_uncert, est_bg_spec, est_bg_spec_uncert, mu_log_fg_const, sigma_log_fg_const, fg_scale)
     @assert size(design_matrix, 2) % 2 == 0 "Design matrix should have an even number of columns, with the first half being cosine terms and the second half sine terms."
 
     mlbg = mean(est_log_bg)
@@ -304,8 +307,8 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     end
     fg_coeffs := sigma_fg .* dfg_coeffs # Exactly equivalent implied prior for fg_coeffs.
     
-    dlog_fg_coeff_const ~ Normal(0, 2) # About factor of ten 1-sigma uncertainty---it's broad
-    log_fg_coeff_const := log(fg_const_scale) + dlog_fg_coeff_const # Guess at the constant amplitude
+    dlog_fg_coeff_const ~ Normal(0, 1) # About factor of ten 1-sigma uncertainty---it's broad
+    log_fg_coeff_const := mu_log_fg_const + dlog_fg_coeff_const * sigma_log_fg_const # So log_fg_coeff_const ~ N(mu_log_fg_const, sigma_log_fg_const), which is what we want.
     fg_coeff_const := exp(log_fg_coeff_const)
 
     # Same implied prior as the original arraydist parameterization; sampled in a
