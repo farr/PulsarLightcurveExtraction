@@ -7,6 +7,7 @@ using DimensionalData
 using Distributions
 using LinearAlgebra
 using Makie
+using Statistics
 using Turing
 
 export PI_TO_KEV
@@ -15,11 +16,14 @@ export event_areas
 export estimate_log_bg
 export estimate_bg_spec
 export spectral_indices
+export phase_histogram_rates
 export energy_bin_exposure
 export spec_fourier_model
 export rebin_energy
 export husl_wheel
 export traceplot
+export median_and_bands
+export foreground_background_lightcurves_segment
 
 """ 
     PI_TO_KEV
@@ -51,6 +55,43 @@ function segment_indices(times, segment_starts, segment_ends)
     @assert all((times .< segment_ends[segment_indices]) .&& (times .>= segment_starts[segment_indices])) "Some events do not fall within any segment."
 
     return segment_indices
+end
+
+"""
+    phase_histogram_rates(phases, exposure_time)
+
+Given photon `phases` in `[0, 1]` and total `exposure_time` (seconds), build a
+histogram using a Scott-like rule specialized to unit-width support, replacing
+`σ` with half the central 68% span (`0.68 / 2`):
+
+`h_bin = 3.5 * 0.68 / 2 / n^(1/3)`, `n_bin = ceil(Int, 1 / h_bin)`.
+
+Returns `(bin_edges, rates, rate_uncertainty)` where `bin_edges` has length
+`n_bin + 1` and `rates` has length `n_bin`, in counts per second per unit phase
+for each bin (i.e. rate conditioned on being in that phase interval).
+"""
+function phase_histogram_rates(phases, exposure_time)
+    @assert exposure_time > 0 "Exposure time must be positive."
+    @assert !isempty(phases) "At least one phase value is required."
+    @assert all(0 .<= phases .<= 1) "All phases must lie in [0, 1]."
+
+    n = length(phases)
+    h_bin = 3.5 * 0.68 / 2 / n^(1 / 3)
+    n_bin = ceil(Int, 1 / h_bin)
+
+    bin_edges = collect(range(0.0, 1.0; length=n_bin + 1))
+    counts = zeros(Int, n_bin)
+
+    for p in phases
+        # Include p == 1 in the final bin for right-edge closure.
+        i = p == 1 ? n_bin : searchsortedfirst(bin_edges, p) - 1
+        counts[i] += 1
+    end
+
+    bin_widths = diff(bin_edges)
+    rates = counts ./ (exposure_time .* bin_widths)
+    rate_uncertainty = sqrt.(counts) ./ (exposure_time .* bin_widths)
+    return bin_edges, rates, rate_uncertainty
 end
 
 """ 
@@ -504,6 +545,66 @@ function traceplot(chain; var_names=nothing)
     end
 
     return f
+end
+
+"""
+    median_and_bands(array; q=((0.16, 0.84), (0.025, 0.975)))
+
+Given an array of posterior samples with dimensions `:chain` and `:draw`,
+compute the median and credible intervals across those dimensions.  The `q`
+argument specifies the quantiles to compute for the credible intervals; by
+default, it computes the 68% credible interval (between the 16th and 84th
+percentiles) and the 95% credible interval (between the 2.5th and 97.5th
+percentiles).  The output is a tuple of `(median, lower_uppers)` where `median`
+is the median across chains and draws, and `lower_uppers` is a tuple of tuples
+of `(lower, upper)` for each pair of quantiles specified in `q`.
+"""
+function median_and_bands(array; q=((0.16, 0.84), (0.025, 0.975)))
+    m = dropdims(median(array, dims=(:chain, :draw)), dims=(:chain, :draw))
+    lower_uppers = map(q) do qq
+        lower = dropdims(mapslices(x -> quantile(vec(x), qq[1]), array; dims=(:chain, :draw)), dims=(:chain, :draw))
+        upper = dropdims(mapslices(x -> quantile(vec(x), qq[2]), array; dims=(:chain, :draw)), dims=(:chain, :draw))
+        return (lower, upper)
+    end
+    return (m, lower_uppers)
+end
+
+"""
+    foreground_background_lightcurves_segment(trace, segment, phases, spec_bins_pi, segment_start, segment_stop, arf_start, arf_stop, arf_e_low, arf_e_high, arf_response)
+
+Given a trace of posterior samples, segment index, array of phases (spanning
+``[0,1]``), energy bin edges in PI, segment start and stop times, ARF start and
+stop times, ARF energy bin edges, and ARF response matrix, compute the
+foreground, background, and total lightcurves for the specified segment by
+marginalizing over the posterior samples.  The foreground lightcurve is computed
+by summing the constant part of the foreground and the variable part of the
+foreground (the Fourier components) across energy bins, weighted by the exposure
+for each energy bin.  The background lightcurve is computed as a constant across
+phase (since the model assumes a constant background rate in each segment) by
+summing over energy bins weighted by the background spectrum.  The total
+lightcurve is the sum of the foreground and background lightcurves.
+
+The lightcurves will be in units of counts per second as a function of phase.
+
+Returns a tuple of `(fg_lc, bg_lc, total_lc)`
+"""
+function foreground_background_lightcurves_segment(trace, segment, phases, spec_bins_pi, segment_start, segment_stop, arf_start, arf_stop, arf_e_low, arf_e_high, arf_response)
+    cm, sm = cos_sin_matrices(phases, size(trace.posterior.fg_coeffs, :fourier) ÷ 2)
+    m = DimArray(hcat(cm, sm), (Dim{:phases}(phases), dims(trace.posterior.fg_coeffs, :fourier)))
+
+    exposures = DimArray(energy_bin_exposure(spec_bins_pi, [segment_start[segment]], [segment_stop[segment]], arf_start, arf_stop, arf_e_low, arf_e_high, arf_response), dims(trace.posterior.fg_spec, :energy))
+    exposures ./= (segment_stop[segment] - segment_start[segment]) # Want cts / sec, not cts, so divide by segment duration.
+
+    variable_fg_lc = dropdims(sum(@d(m .* trace.posterior.fg_coeffs .* set(cat(trace.posterior.fg_spec, trace.posterior.fg_spec, dims=:half_fourier), :half_fourier => Dim{:fourier}) .* exposures), dims=(:fourier, :energy)), dims=(:fourier, :energy))
+    const_fg_lc = dropdims(sum(@d(trace.posterior.fg_coeff_const .* trace.posterior.fg_spec_const .* exposures), dims=:energy), dims=:energy)
+    fg_lc = @d const_fg_lc .+ variable_fg_lc
+
+    # No exposures in the background
+    bg_lc = dropdims(sum(@d(trace.posterior.bg_segment[segment=At(segment)] .* trace.posterior.bg_spec .* DimArray(ones(length(phases)), :phases => phases)), dims=:energy), dims=:energy)
+
+    total_lc = @d fg_lc .+ bg_lc
+
+    return fg_lc, bg_lc, total_lc
 end
 
 end # module PulsarLightcurveExtraction
