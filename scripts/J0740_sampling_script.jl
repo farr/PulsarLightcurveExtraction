@@ -21,9 +21,9 @@ end
     using ArviZ
     using DimensionalData
     using FITSIO
+    using Enzyme
     using HDF5
     using LinearAlgebra
-    using Mooncake
     using NCDatasets
     using PulsarLightcurveExtraction
     using Turing
@@ -95,9 +95,9 @@ end
 
 ## Sample it
 if n_chain > 1
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), MCMCDistributed(), n_mcmc, n_chain)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), MCMCDistributed(), n_mcmc, n_chain)
 else
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), n_mcmc)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), n_mcmc)
 end
 
 ## Package it up
