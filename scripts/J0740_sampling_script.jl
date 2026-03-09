@@ -1,11 +1,11 @@
 ## Set up script parameters
 n_spec = 16
-n_segments = nothing
+n_segments = 100 # nothing
 n_fourier = 4
 
 fg_scale = 1e-6 # Empirically determined fg rate estimate, based on not constraining the posterior too much.
 
-n_chain = 8
+n_chain = 1 # 8
 n_mcmc = 1000
 
 target_arate = 0.8
@@ -55,7 +55,6 @@ cm, sm = PulsarLightcurveExtraction.cos_sin_matrices(event_phase, n_fourier)
 
 event_segment_indices = PulsarLightcurveExtraction.segment_indices(event_time, segment_start, segment_stop);
 event_spectral_indices, spec_bins_pi = PulsarLightcurveExtraction.spectral_indices(event_pi, n_spec)
-event_areas = PulsarLightcurveExtraction.event_areas(event_time, event_spectral_indices, spec_bins_pi, arf_start, arf_stop, arf_e_low, arf_e_high, arf_response);
 
 # Logarithmic bins assumed!
 spec_bin_centers = sqrt.(spec_bins_pi[1:end-1] .* spec_bins_pi[2:end]) .* PulsarLightcurveExtraction.PI_TO_KEV
@@ -66,7 +65,6 @@ if n_segments !== nothing
 
     event_time = event_time[event_sel]
     event_segment_indices = event_segment_indices[event_sel]
-    event_areas = event_areas[event_sel]
     event_spectral_indices = event_spectral_indices[event_sel]
 
     cm = cm[event_sel, :]
@@ -80,14 +78,14 @@ else
 end
 
 ## Total exposure over all segments in use
-energy_bin_exposures = PulsarLightcurveExtraction.energy_bin_exposure(spec_bins_pi, segment_start, segment_stop, arf_start, arf_stop, arf_e_low, arf_e_high, arf_response)
+energy_bin_areas = PulsarLightcurveExtraction.energy_bin_areas(spec_bins_pi, segment_start, segment_stop, arf_start, arf_stop, arf_e_low, arf_e_high, arf_response)
 
 ## Estimate helper quantities from the background
 est_log_bg, est_log_bg_uncert = PulsarLightcurveExtraction.estimate_log_bg(event_segment_indices, event_spectral_indices, segment_start, segment_stop)
-est_log_fg_const, est_log_fg_const_uncert = PulsarLightcurveExtraction.estimate_log_fg_const(event_spectral_indices, energy_bin_exposures)
+est_log_fg_const, est_log_fg_const_uncert = PulsarLightcurveExtraction.estimate_log_fg_const(event_segment_indices, event_spectral_indices, energy_bin_areas, segment_Ts)
 
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, event_segment_indices, event_spectral_indices, event_areas, segment_Ts, energy_bin_exposures, est_log_bg, est_log_bg_uncert, est_log_fg_const, est_log_fg_const_uncert, fg_scale)
+model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_bg_uncert, est_log_fg_const, est_log_fg_const_uncert, fg_scale)
 
 if n_chain > 1
     println("Running with $n_chain chains in distributed mode...")
@@ -103,7 +101,7 @@ else
 end
 
 ## Package it up
-trace = from_mcmcchains(chains; dims=Dict(:dmu_log_bg => (:energy, ), :mu_log_bg => (:energy, ), :log_dsigma_log_bg => (:energy, ), :sigma_log_bg => (:energy,), :dlog_bg => (:energy, :segment), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :dlog_fg_coeff_const => (:energy,), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers))
+trace = from_mcmcchains(chains; dims=Dict(:dmu_log_bg => (:energy, ), :mu_log_bg => (:energy, ), :log_dsigma_log_bg => (:energy, ), :sigma_log_bg => (:energy,), :dlog_bg => (:energy, :segment), :bg => (:energy, :segment), :dlog_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers))
 
 ## Save the chains
 to_netcdf(trace, joinpath(@__DIR__, "..", "data", "J0740_trace.nc"))

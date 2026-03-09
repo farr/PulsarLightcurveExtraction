@@ -10,6 +10,7 @@ using Makie
 using Statistics
 using Turing
 
+export logdiffexp
 export PI_TO_KEV
 export cos_sin_matrices, segment_indices
 export event_areas
@@ -17,13 +18,23 @@ export estimate_log_bg
 export estimate_bg_spec
 export spectral_indices
 export phase_histogram_rates
-export energy_bin_exposure
+export energy_bin_areas
 export spec_fourier_model
 export rebin_energy
 export husl_wheel
 export traceplot
 export median_and_bands
 export foreground_background_lightcurves_segment
+
+raw"""
+    logdiffexp(x, y)
+
+Returns ``\log\left( \exp(x) - \exp(y) \right)`` but computed in a
+numerically-stable way.
+"""
+function logdiffexp(x, y)
+    x + log1p(-exp(y-x))
+end
 
 """ 
     PI_TO_KEV
@@ -154,19 +165,21 @@ function estimate_log_bg(event_segment_indices, event_spectral_indices, segment_
 end
 
 """
-    estimate_log_fg_const(event_spectral_indices, energy_bin_exposure)
+    estimate_log_fg_const(event_segment_indices, event_spectral_indices, energy_bin_areas, segment_Ts)
 
 Returns an estimate of the log_fg_const and associated uncertainty, attributing
 all counts in each energy bin to the foreground.  This is used to scale the
 sampler variables, so need not be particularly accurate.
 """
-function estimate_log_fg_const(event_spectral_indices, energy_bin_exposure)
-    n_spec = length(energy_bin_exposure)
+function estimate_log_fg_const(event_segment_indices, event_spectral_indices, energy_bin_areas, segment_Ts)
+    n_spec = size(energy_bin_areas, 1)
 
     counts_per_spec = zeros(Int, n_spec)
-    for spec in event_spectral_indices
+    for (seg, spec) in zip(event_segment_indices, event_spectral_indices)
         counts_per_spec[spec] += 1
     end
+
+    energy_bin_exposure = sum(energy_bin_areas .* reshape(segment_Ts, (1, :)), dims=2)
 
     est_log_fg_const = log.(counts_per_spec .+ 0.5) .- log.(energy_bin_exposure)
     est_log_fg_const_uncert = 1.0 ./ sqrt.(counts_per_spec .+ 0.5)
@@ -174,18 +187,15 @@ function estimate_log_fg_const(event_spectral_indices, energy_bin_exposure)
 end
 
 """
-    energy_bin_exposure(spec_bins, segment_starts, segment_ends, arf_starts, arf_ends, arf_e_low, arf_e_high, arf_area)
+    energy_bin_areas(spec_bins, segment_starts, segment_ends, arf_starts, arf_ends, arf_e_low, arf_e_high, arf_area)
 
-Returns the exposure (time * mean effective area) for each energy bin, computed
-by integrating over the observing segments and the ARF.  This is used to compute
-the expected number of counts from the constant term in the foreground, which is
-given by the sum over energy bins of the foreground constant amplitude times the
-foreground constant spectrum times the energy bin exposure.
+Returns the effective area for each energy bin at each segement by averaging the
+ARF in that segment over each energy bin.
 """
-function energy_bin_exposure(spec_bins, segment_starts, segment_ends, arf_starts, arf_ends, arf_e_low, arf_e_high, arf_area)
-    exposures = zeros(Float64, length(spec_bins)-1)
+function energy_bin_areas(spec_bins, segment_starts, segment_ends, arf_starts, arf_ends, arf_e_low, arf_e_high, arf_area)
+    exposures = zeros(Float64, length(spec_bins)-1, length(segment_starts))
 
-    for i in eachindex(segment_starts)
+    for i in axes(exposures, 2)
         start = segment_starts[i]
         stop = segment_ends[i]
 
@@ -193,7 +203,7 @@ function energy_bin_exposure(spec_bins, segment_starts, segment_ends, arf_starts
         iarf_stop = searchsortedfirst(arf_ends, stop)
         @assert iarf_start == iarf_stop "Segment $i overlaps multiple ARF intervals, which is not currently supported."
 
-        for j in eachindex(exposures)
+        for j in axes(exposures, 1)
             pi_low = spec_bins[j]
             pi_high = spec_bins[j+1]
 
@@ -203,7 +213,7 @@ function energy_bin_exposure(spec_bins, segment_starts, segment_ends, arf_starts
             jarf_low = searchsortedfirst(arf_e_high, e_low)
             jarf_high = searchsortedfirst(arf_e_high, e_high)
 
-            exposures[j] += (stop - start) * mean(arf_area[jarf_low:jarf_high, iarf_start])
+            exposures[j, i] += mean(arf_area[jarf_low:jarf_high, iarf_start])
         end
     end
 
@@ -309,7 +319,7 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, event_segment_indices, event_spectral_indices, event_sensitive_areas, segment_Ts, energy_bin_exposure, est_log_bg, est_log_bg_uncert, est_log_fg_const, est_log_fg_const_uncert, fg_scale)
+@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_bg_uncert, est_log_fg_const, est_log_fg_const_uncert, fg_scale)
     @assert size(cos_design_matrix, 2) == size(sin_design_matrix, 2) "Cosine and sine design matrices should have the same number of columns."
 
     _, n_fourier = size(cos_design_matrix)
@@ -324,11 +334,10 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     # and the shift and scaling depends only on the (constant) data, no Jacobian
     # needed.
     dmu_log_bg = Vector{Float64}(undef, n_eg_bin)
+    mu_log_bg = Vector{Float64}(undef, n_eg_bin)
     for i in eachindex(dmu_log_bg)
         dmu_log_bg[i] ~ Flat() # Flat prior on the shift of the mean log_bg in units of its standard error.
-    end
-    mu_log_bg := mean_est_log_bg .+ dmu_log_bg .* std_est_log_bg ./ sqrt(n_seg)
-    for i in eachindex(mu_log_bg)
+        mu_log_bg[i] := mean_est_log_bg[i] + dmu_log_bg[i] * std_est_log_bg[i] / sqrt(n_seg)
         Turing.@addlogprob! logpdf(Normal(mean_est_log_bg[i], 2), mu_log_bg[i]) # N(estimated, 2) prior on each component of mu_log_bg, with a large s.d. to avoid overconstraining the posterior.
     end
     
@@ -341,36 +350,34 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     # then impose Exp(1) with a Jacobian (== d(sigma_log_bg) /
     # d(log_dsigma_log_bg)).
     log_dsigma_log_bg = Vector{Float64}(undef, n_eg_bin)
+    sigma_log_bg = Vector{Float64}(undef, n_eg_bin)
     for i in eachindex(log_dsigma_log_bg)
         log_dsigma_log_bg[i] ~ Flat() # Flat prior on the log of the shift of the log_bg s.d. in units of its standard error.
-    end
-    sigma_log_bg := std_est_log_bg .* exp.(log_dsigma_log_bg ./ sqrt(n_seg))
-    for i in eachindex(sigma_log_bg)
-         Turing.@addlogprob! logpdf(Exponential(1), sigma_log_bg[i]) + log(sigma_log_bg[i]) - log(sqrt(n_seg)) # Exp(1) prior on sigma_log_bg with Jacobian for the transformation from log_dsigma_log_bg to sigma_log_bg.
+        sigma_log_bg[i] := std_est_log_bg[i] * exp(log_dsigma_log_bg[i] / sqrt(n_seg))
+        Turing.@addlogprob! logpdf(Exponential(1), sigma_log_bg[i]) + log(sigma_log_bg[i]) - log(sqrt(n_seg)) # Exp(1) prior on sigma_log_bg with Jacobian for the transformation from log_dsigma_log_bg to sigma_log_bg.
     end
 
     dlog_bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
-    for i in 1:n_eg_bin
-        for j in 1:n_seg
-            dlog_bg[i, j] ~ Flat() # Flat prior on the shift of the log_bg in units of its standard error.
-        end
-    end
-    log_bg := est_log_bg .+ dlog_bg .* est_log_bg_uncert
-    bg := exp.(log_bg) # Background rates for each segment and energy bin.
-    for j in axes(log_bg, 2)
-        for i in axes(log_bg, 1)
-            Turing.@addlogprob! logpdf(Normal(mu_log_bg[i], sigma_log_bg[i]), log_bg[i, j]) # Normal prior on each log_bg[i, j] with mean mu_log_bg[i] and s.d. sigma_log_bg[i].
+    bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
+    for j in axes(dlog_bg, 2)
+        for i in axes(dlog_bg, 1)
+            dlog_bg[i,j] ~ Flat()
+
+            log_bg = est_log_bg[i,j] + dlog_bg[i,j] * est_log_bg_uncert[i,j]
+            bg[i,j] := exp(log_bg)
+
+            Turing.@addlogprob! logpdf(Normal(mu_log_bg[i], sigma_log_bg[i]), log_bg)
         end
     end
 
     dlog_fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
+    fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
     for i in eachindex(dlog_fg_coeff_const)
-        dlog_fg_coeff_const[i] ~ Flat() # Flat prior on the shift of the log_fg_coeff_const in units of its standard error.
-    end
-    log_fg_coeff_const := est_log_fg_const .+ dlog_fg_coeff_const .* est_log_fg_const_uncert
-    fg_coeff_const := exp.(log_fg_coeff_const)
-    for i in eachindex(log_fg_coeff_const)
-        Turing.@addlogprob! logpdf(Normal(est_log_fg_const[i], 2), log_fg_coeff_const[i]) # N(estimated, 2) prior on each component of log_fg_coeff_const, with a large s.d. to avoid overconstraining the posterior.
+        dlog_fg_coeff_const[i] ~ Flat()
+        log_fg_coeff = est_log_fg_const[i] + dlog_fg_coeff_const[i] * est_log_fg_const_uncert[i]
+        fg_coeff_const[i] := exp(log_fg_coeff)
+
+        Turing.@addlogprob! logpdf(Normal(est_log_fg_const[i], 2), log_fg_coeff)
     end
 
     dsigma_fg ~ Exponential(1)
@@ -378,21 +385,24 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
 
     dfg_coeffs_cos = Matrix{Float64}(undef, n_eg_bin, n_fourier)
     dfg_coeffs_sin = Matrix{Float64}(undef, n_eg_bin, n_fourier)
+    fg_coeffs_cos = Matrix{Float64}(undef, n_eg_bin, n_fourier)
+    fg_coeffs_sin = Matrix{Float64}(undef, n_eg_bin, n_fourier)
     for i in 1:n_eg_bin
         for j in 1:n_fourier
             dfg_coeffs_cos[i, j] ~ Normal(0, 1)
             dfg_coeffs_sin[i, j] ~ Normal(0, 1)
+
+            fg_coeffs_cos[i,j] := sigma_fg * dfg_coeffs_cos[i,j]
+            fg_coeffs_sin[i,j] := sigma_fg * dfg_coeffs_sin[i,j]
         end
     end
-    fg_coeffs_cos := sigma_fg .* dfg_coeffs_cos # Implied N(0, sigma_fg) prior for fg_cos_coeffs.
-    fg_coeffs_sin := sigma_fg .* dfg_coeffs_sin # Implied N(0, sigma_fg) prior for fg_sin_coeffs.
 
-    for i in eachindex(event_sensitive_areas)
+    for i in eachindex(event_spectral_indices)
         rate = fg_coeff_const[event_spectral_indices[i]]
         for k in 1:n_fourier
             rate += cos_design_matrix[i, k] * fg_coeffs_cos[event_spectral_indices[i], k] + sin_design_matrix[i, k] * fg_coeffs_sin[event_spectral_indices[i], k]
         end
-        rate *= event_sensitive_areas[i]
+        rate *= energy_bin_areas[event_spectral_indices[i], event_segment_indices[i]]
 
         rate += bg[event_spectral_indices[i], event_segment_indices[i]]
 
@@ -410,8 +420,10 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         end
     end
 
-    for i in axes(fg_coeff_const, 1)
-        Turing.@addlogprob! -fg_coeff_const[i] * energy_bin_exposure[i]
+    for j in eachindex(segment_Ts)
+        for i in axes(energy_bin_areas, 1)
+            Turing.@addlogprob! -fg_coeff_const[i] * segment_Ts[j] * energy_bin_areas[i,j]
+        end
     end
 end
 
@@ -520,11 +532,11 @@ function foreground_background_lightcurves_segment(trace, segment, phases, spec_
     cm = DimArray(cm, (:phases => phases, :fourier => 1:size(cm,2)))
     sm = DimArray(sm, (:phases => phases, :fourier => 1:size(sm,2)))
 
-    exposures = DimArray(energy_bin_exposure(spec_bins_pi, [segment_start[segment]], [segment_stop[segment]], arf_start, arf_stop, arf_e_low, arf_e_high, arf_response), dims(trace.posterior.fg_coeff_const, :energy))
-    exposures ./= (segment_stop[segment] - segment_start[segment]) # Want cts / sec, not cts, so divide by segment duration.
+    areas = energy_bin_areas(spec_bins_pi, [segment_start[segment]], [segment_stop[segment]], arf_start, arf_stop, arf_e_low, arf_e_high, arf_response)
+    areas = DimArray(areas[:,1], dims(trace.posterior.fg_coeff_const, :energy))
 
-    variable_fg_lc = dropdims(sum(@d((cm .* trace.posterior.fg_coeffs_cos .+ sm .* trace.posterior.fg_coeffs_sin) .* exposures), dims=(:fourier, :energy)), dims=(:fourier, :energy))
-    const_fg_lc = dropdims(sum(@d(trace.posterior.fg_coeff_const .* exposures), dims=:energy), dims=:energy)
+    variable_fg_lc = dropdims(sum(@d((cm .* trace.posterior.fg_coeffs_cos .+ sm .* trace.posterior.fg_coeffs_sin) .* areas), dims=(:fourier, :energy)), dims=(:fourier, :energy))
+    const_fg_lc = dropdims(sum(@d(trace.posterior.fg_coeff_const .* areas), dims=:energy), dims=:energy)
     fg_lc = @d const_fg_lc .+ variable_fg_lc
 
     # No exposures in the background
