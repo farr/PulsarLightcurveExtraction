@@ -325,10 +325,12 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     # needed.
     dmu_log_bg = Vector{Float64}(undef, n_eg_bin)
     for i in eachindex(dmu_log_bg)
-        dmu_log_bg[i] ~ Flat() # Will put prior in later
+        dmu_log_bg[i] ~ Flat() # Flat prior on the shift of the mean log_bg in units of its standard error.
     end
     mu_log_bg := mean_est_log_bg .+ dmu_log_bg .* std_est_log_bg ./ sqrt(n_seg)
-    Turing.@addlogprob! sum(logpdf.(Normal.(mean_est_log_bg, 2), mu_log_bg)) # N(estimated, 2) prior on mu_log_bg
+    for i in eachindex(mu_log_bg)
+        Turing.@addlogprob! logpdf(Normal(mean_est_log_bg[i], 2), mu_log_bg[i]) # N(estimated, 2) prior on each component of mu_log_bg, with a large s.d. to avoid overconstraining the posterior.
+    end
     
     # We want to sample in a variable whose unit scale reflects the uncertainty
     # in the log_bg s.d. estimate, which is approximately est_log_bg_uncert /
@@ -340,34 +342,36 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     # d(log_dsigma_log_bg)).
     log_dsigma_log_bg = Vector{Float64}(undef, n_eg_bin)
     for i in eachindex(log_dsigma_log_bg)
-        log_dsigma_log_bg[i] ~ Flat()
+        log_dsigma_log_bg[i] ~ Flat() # Flat prior on the log of the shift of the log_bg s.d. in units of its standard error.
     end
     sigma_log_bg := std_est_log_bg .* exp.(log_dsigma_log_bg ./ sqrt(n_seg))
     for i in eachindex(sigma_log_bg)
-        Turing.@addlogprob! logpdf(Exponential(1), sigma_log_bg[i]) + log(sigma_log_bg[i]) - log(sqrt(n_seg))
+         Turing.@addlogprob! logpdf(Exponential(1), sigma_log_bg[i]) + log(sigma_log_bg[i]) - log(sqrt(n_seg)) # Exp(1) prior on sigma_log_bg with Jacobian for the transformation from log_dsigma_log_bg to sigma_log_bg.
     end
 
     dlog_bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
-    for i in axes(dlog_bg, 1)
-        for j in axes(dlog_bg, 2)
-            dlog_bg[i, j] ~ Flat()
+    for i in 1:n_eg_bin
+        for j in 1:n_seg
+            dlog_bg[i, j] ~ Flat() # Flat prior on the shift of the log_bg in units of its standard error.
         end
     end
     log_bg := est_log_bg .+ dlog_bg .* est_log_bg_uncert
     bg := exp.(log_bg) # Background rates for each segment and energy bin.
-    for i in axes(log_bg, 1)
-        for j in axes(log_bg, 2)
-            Turing.@addlogprob! logpdf(Normal(mu_log_bg[i], sigma_log_bg[i]), log_bg[i, j])
+    for j in axes(log_bg, 2)
+        for i in axes(log_bg, 1)
+            Turing.@addlogprob! logpdf(Normal(mu_log_bg[i], sigma_log_bg[i]), log_bg[i, j]) # Normal prior on each log_bg[i, j] with mean mu_log_bg[i] and s.d. sigma_log_bg[i].
         end
     end
 
     dlog_fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
     for i in eachindex(dlog_fg_coeff_const)
-        dlog_fg_coeff_const[i] ~ Flat() # Prior comes later
+        dlog_fg_coeff_const[i] ~ Flat() # Flat prior on the shift of the log_fg_coeff_const in units of its standard error.
     end
     log_fg_coeff_const := est_log_fg_const .+ dlog_fg_coeff_const .* est_log_fg_const_uncert
-    Turing.@addlogprob! sum(logpdf.(Normal.(est_log_fg_const, 2), log_fg_coeff_const)) # Factor of 10 uncertainty around the estimated log foreground constant coefficient
     fg_coeff_const := exp.(log_fg_coeff_const)
+    for i in eachindex(log_fg_coeff_const)
+        Turing.@addlogprob! logpdf(Normal(est_log_fg_const[i], 2), log_fg_coeff_const[i]) # N(estimated, 2) prior on each component of log_fg_coeff_const, with a large s.d. to avoid overconstraining the posterior.
+    end
 
     dsigma_fg ~ Exponential(1)
     sigma_fg := fg_scale * dsigma_fg
@@ -375,46 +379,39 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     dfg_coeffs_cos = Matrix{Float64}(undef, n_eg_bin, n_fourier)
     dfg_coeffs_sin = Matrix{Float64}(undef, n_eg_bin, n_fourier)
     for i in 1:n_eg_bin
-        for k in 1:n_fourier
-            dfg_coeffs_cos[i, k] ~ Normal(0, 1)
-            dfg_coeffs_sin[i, k] ~ Normal(0, 1)
+        for j in 1:n_fourier
+            dfg_coeffs_cos[i, j] ~ Normal(0, 1)
+            dfg_coeffs_sin[i, j] ~ Normal(0, 1)
         end
     end
     fg_coeffs_cos := sigma_fg .* dfg_coeffs_cos # Implied N(0, sigma_fg) prior for fg_cos_coeffs.
     fg_coeffs_sin := sigma_fg .* dfg_coeffs_sin # Implied N(0, sigma_fg) prior for fg_sin_coeffs.
-    
-    has_nonpositive_rate = false
-    log_events = 0.0
-    for i in eachindex(event_segment_indices)
-        segi = event_segment_indices[i]
-        speci = event_spectral_indices[i]
-        areai = event_sensitive_areas[i]
 
-        rate_i = fg_coeff_const[speci]
+    for i in eachindex(event_sensitive_areas)
+        rate = fg_coeff_const[event_spectral_indices[i]]
         for k in 1:n_fourier
-            rate_i += cos_design_matrix[i, k] * fg_coeffs_cos[speci, k]
-            rate_i += sin_design_matrix[i, k] * fg_coeffs_sin[speci, k]
+            rate += cos_design_matrix[i, k] * fg_coeffs_cos[event_spectral_indices[i], k] + sin_design_matrix[i, k] * fg_coeffs_sin[event_spectral_indices[i], k]
         end
-        rate_i *= areai
+        rate *= event_sensitive_areas[i]
 
-        rate_i += bg[speci, segi]
-        
-        if rate_i <= 0
-            has_nonpositive_rate = true
+        rate += bg[event_spectral_indices[i], event_segment_indices[i]]
+
+        if rate <= 0
+            # Cannot have negative rate!
+            Turing.@addlogprob! -Inf
         else
-            log_events += log(rate_i)
+            Turing.@addlogprob! log(rate)
         end
     end
 
-    if has_nonpositive_rate
-        # Cannot have negative rate!
-        Turing.@addlogprob! -Inf
-    else
-        st = reshape(segment_Ts, (1, :))
-        bg_count = sum(bg .* st)
-        fg_count = sum(fg_coeff_const .* energy_bin_exposure)
+    for i in eachindex(segment_Ts)
+        for j in axes(bg, 1)
+            Turing.@addlogprob! -bg[j,i] * segment_Ts[i] # BG counts from segment i and energy bin j.
+        end
+    end
 
-        Turing.@addlogprob! log_events - bg_count - fg_count
+    for i in axes(fg_coeff_const, 1)
+        Turing.@addlogprob! -fg_coeff_const[i] * energy_bin_exposure[i]
     end
 end
 

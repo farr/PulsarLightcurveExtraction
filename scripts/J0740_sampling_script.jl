@@ -4,7 +4,7 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 
 ## Set up script parameters
 n_spec = 16
-n_segments = 1000 # nothing
+n_segments = nothing
 n_fourier = 4
 
 fg_scale = 1e-6 # Empirically determined fg rate estimate, based on not constraining the posterior too much.
@@ -24,10 +24,10 @@ end
 @everywhere begin
     using ArviZ
     using DimensionalData
+    using Enzyme
     using FITSIO
     using HDF5
     using LinearAlgebra
-    using Mooncake
     using NCDatasets
     using PulsarLightcurveExtraction
     using Turing
@@ -73,6 +73,9 @@ if n_segments !== nothing
     event_areas = event_areas[event_sel]
     event_spectral_indices = event_spectral_indices[event_sel]
 
+    cm = cm[event_sel, :]
+    sm = sm[event_sel, :]
+
     segment_start = segment_start[1:n_segments]
     segment_stop = segment_stop[1:n_segments]
     segment_Ts = segment_Ts[1:n_segments]
@@ -98,9 +101,9 @@ end
 
 ## Sample it
 if n_chain > 1
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), MCMCDistributed(), n_mcmc, n_chain)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), MCMCDistributed(), n_mcmc, n_chain)
 else
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), n_mcmc)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), n_mcmc)
 end
 
 ## Package it up
