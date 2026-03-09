@@ -338,11 +338,13 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         sigma_log_bg[i] ~ Exponential(1)
     end
 
+    dlog_bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
     log_bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
     bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
     for j in axes(log_bg, 2)
         for i in axes(log_bg, 1)
-            log_bg[i,j] ~ Normal(mu_log_bg[i], sigma_log_bg[i])
+            dlog_bg[i,j] ~ Normal(0, 1)
+            log_bg[i,j] := mu_log_bg[i] + sigma_log_bg[i] * dlog_bg[i,j]
             bg[i,j] := exp(log_bg[i,j])
         end
     end
@@ -501,16 +503,15 @@ The lightcurves will be in units of counts per second as a function of phase.
 
 Returns a tuple of `(fg_lc, bg_lc, total_lc)`
 """
-function foreground_background_lightcurves_segment(trace, segment, phases, spec_bins_pi, segment_start, segment_stop, arf_start, arf_stop, arf_e_low, arf_e_high, arf_response)
+function foreground_background_lightcurves_segment(trace, segment, phases, energy_bin_areas)
     cm, sm = cos_sin_matrices(phases, size(trace.posterior.fg_coeffs_cos, :fourier))
     cm = DimArray(cm, (:phases => phases, :fourier => 1:size(cm,2)))
     sm = DimArray(sm, (:phases => phases, :fourier => 1:size(sm,2)))
 
-    areas = energy_bin_areas(spec_bins_pi, [segment_start[segment]], [segment_stop[segment]], arf_start, arf_stop, arf_e_low, arf_e_high, arf_response)
-    areas = DimArray(areas[:,1], dims(trace.posterior.fg_coeff_const, :energy))
+    energy_bin_areas = DimArray(vec(energy_bin_areas), dims(trace.posterior.fg_coeff_const, :energy))
 
-    variable_fg_lc = dropdims(sum(@d((cm .* trace.posterior.fg_coeffs_cos .+ sm .* trace.posterior.fg_coeffs_sin) .* areas), dims=(:fourier, :energy)), dims=(:fourier, :energy))
-    const_fg_lc = dropdims(sum(@d(trace.posterior.fg_coeff_const .* areas), dims=:energy), dims=:energy)
+    variable_fg_lc = dropdims(sum(@d((cm .* trace.posterior.fg_coeffs_cos .+ sm .* trace.posterior.fg_coeffs_sin) .* energy_bin_areas), dims=(:fourier, :energy)), dims=(:fourier, :energy))
+    const_fg_lc = dropdims(sum(@d(trace.posterior.fg_coeff_const .* energy_bin_areas), dims=:energy), dims=:energy)
     fg_lc = @d const_fg_lc .+ variable_fg_lc
 
     # No exposures in the background
