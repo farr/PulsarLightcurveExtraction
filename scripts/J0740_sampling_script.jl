@@ -1,7 +1,3 @@
-## Initialize the env
-using Pkg
-Pkg.activate(joinpath(@__DIR__, ".."))
-
 ## Set up script parameters
 n_spec = 16
 n_segments = nothing
@@ -101,9 +97,9 @@ end
 
 ## Sample it
 if n_chain > 1
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), MCMCDistributed(), n_mcmc, n_chain)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), MCMCDistributed(), n_mcmc, n_chain)
 else
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), n_mcmc)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), n_mcmc)
 end
 
 ## Package it up
