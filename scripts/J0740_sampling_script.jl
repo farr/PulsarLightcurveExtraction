@@ -20,10 +20,10 @@ end
 @everywhere begin
     using ArviZ
     using DimensionalData
-    using Enzyme
     using FITSIO
     using HDF5
     using LinearAlgebra
+    using Mooncake
     using NCDatasets
     using PulsarLightcurveExtraction
     using Turing
