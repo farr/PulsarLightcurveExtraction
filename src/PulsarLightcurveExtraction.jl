@@ -319,7 +319,7 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_bg_uncert, est_log_fg_const, est_log_fg_const_uncert, fg_scale)
+@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_fg_const, fg_scale)
     @assert size(cos_design_matrix, 2) == size(sin_design_matrix, 2) "Cosine and sine design matrices should have the same number of columns."
 
     _, n_fourier = size(cos_design_matrix)
@@ -327,57 +327,31 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     n_eg_bin = maximum(event_spectral_indices)
 
     mean_est_log_bg = vec(mean(est_log_bg, dims=2))
-    std_est_log_bg = vec(std(est_log_bg, dims=2))
 
-    # dmu_log_bg is a variable that shifts the mean log_bg up or down by its
-    # standard error; because mu_log_bg is just shifted and scaled dmu_log_bg,
-    # and the shift and scaling depends only on the (constant) data, no Jacobian
-    # needed.
-    dmu_log_bg = Vector{Float64}(undef, n_eg_bin)
     mu_log_bg = Vector{Float64}(undef, n_eg_bin)
-    for i in eachindex(dmu_log_bg)
-        dmu_log_bg[i] ~ Flat() # Flat prior on the shift of the mean log_bg in units of its standard error.
-        mu_log_bg[i] := mean_est_log_bg[i] + dmu_log_bg[i] * std_est_log_bg[i] / sqrt(n_seg)
-        Turing.@addlogprob! logpdf(Normal(mean_est_log_bg[i], 2), mu_log_bg[i]) # N(estimated, 2) prior on each component of mu_log_bg, with a large s.d. to avoid overconstraining the posterior.
+    for i in eachindex(mu_log_bg)
+        mu_log_bg[i] ~ Normal(mean_est_log_bg[i], 2)
     end
     
-    # We want to sample in a variable whose unit scale reflects the uncertainty
-    # in the log_bg s.d. estimate, which is approximately est_log_bg_uncert /
-    # sqrt(n_seg) (because the uncertainty in the mean is smaller than the
-    # uncertainty in individual log_bg values by a factor of sqrt(n_seg)).  But
-    # overall we want to give the s.d. of the log_bg an Exp(1) prior; so we
-    # define the variable with a Flat() prior, transform to sigma_log_bg, and
-    # then impose Exp(1) with a Jacobian (== d(sigma_log_bg) /
-    # d(log_dsigma_log_bg)).
-    log_dsigma_log_bg = Vector{Float64}(undef, n_eg_bin)
     sigma_log_bg = Vector{Float64}(undef, n_eg_bin)
-    for i in eachindex(log_dsigma_log_bg)
-        log_dsigma_log_bg[i] ~ Flat() # Flat prior on the log of the shift of the log_bg s.d. in units of its standard error.
-        sigma_log_bg[i] := std_est_log_bg[i] * exp(log_dsigma_log_bg[i] / sqrt(n_seg))
-        Turing.@addlogprob! logpdf(Exponential(1), sigma_log_bg[i]) + log(sigma_log_bg[i]) - log(sqrt(n_seg)) # Exp(1) prior on sigma_log_bg with Jacobian for the transformation from log_dsigma_log_bg to sigma_log_bg.
+    for i in eachindex(sigma_log_bg)
+        sigma_log_bg[i] ~ Exponential(1)
     end
 
-    dlog_bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
+    log_bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
     bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
-    for j in axes(dlog_bg, 2)
-        for i in axes(dlog_bg, 1)
-            dlog_bg[i,j] ~ Flat()
-
-            log_bg = est_log_bg[i,j] + dlog_bg[i,j] * est_log_bg_uncert[i,j]
-            bg[i,j] := exp(log_bg)
-
-            Turing.@addlogprob! logpdf(Normal(mu_log_bg[i], sigma_log_bg[i]), log_bg)
+    for j in axes(log_bg, 2)
+        for i in axes(log_bg, 1)
+            log_bg[i,j] ~ Normal(mu_log_bg[i], sigma_log_bg[i])
+            bg[i,j] := exp(log_bg[i,j])
         end
     end
 
-    dlog_fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
+    log_fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
     fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
-    for i in eachindex(dlog_fg_coeff_const)
-        dlog_fg_coeff_const[i] ~ Flat()
-        log_fg_coeff = est_log_fg_const[i] + dlog_fg_coeff_const[i] * est_log_fg_const_uncert[i]
-        fg_coeff_const[i] := exp(log_fg_coeff)
-
-        Turing.@addlogprob! logpdf(Normal(est_log_fg_const[i], 2), log_fg_coeff)
+    for i in eachindex(log_fg_coeff_const)
+        log_fg_coeff_const[i] ~ Normal(est_log_fg_const[i], 2)
+        fg_coeff_const[i] := exp(log_fg_coeff_const[i])
     end
 
     dsigma_fg ~ Exponential(1)
