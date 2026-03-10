@@ -5,3 +5,5 @@ heasoft/J0740/[0-9]*/*
 data/*.pdf
 data/*.nc
 data/*.h5
+logs/*.err
+logs/*.out
