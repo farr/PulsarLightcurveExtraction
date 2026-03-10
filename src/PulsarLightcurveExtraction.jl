@@ -361,7 +361,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     log_fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
     fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
     for i in eachindex(log_fg_coeff_const)
-        log_fg_coeff_const[i] ~ Normal(est_log_fg_const[i], 2)
+        log_fg_coeff_const[i] ~ Normal(est_log_fg_const[i], 2) # Factor-of-ten around estimated foreground---which is just total counts divided by exposure, so assuming no background.
         fg_coeff_const[i] := exp(log_fg_coeff_const[i])
     end
 

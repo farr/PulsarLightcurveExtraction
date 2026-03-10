@@ -1,14 +1,50 @@
+## Parse command-line arguments
+using ArgParse
+
+let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model.")
+    @add_arg_table! s begin
+        "--n-spec"
+            help = "Number of spectral bins"
+            arg_type = Int
+            default = 16
+        "--n-segments"
+            help = "Number of segments to use (default: all)"
+            arg_type = Int
+            default = nothing
+        "--n-fourier"
+            help = "Number of Fourier terms"
+            arg_type = Int
+            default = 4
+        "--fg-scale"
+            help = "Foreground scale (empirically determined fg rate estimate)"
+            arg_type = Float64
+            default = 1e-6
+        "--n-chain"
+            help = "Number of MCMC chains"
+            arg_type = Int
+            default = 4
+        "--n-mcmc"
+            help = "Number of MCMC samples per chain"
+            arg_type = Int
+            default = 1000
+        "--target-arate"
+            help = "Target acceptance rate for NUTS"
+            arg_type = Float64
+            default = 0.8
+    end
+    global parsed_args = parse_args(s)
+end
+
 ## Set up script parameters
-n_spec = 16
-n_segments = 100 # nothing
-n_fourier = 4
+n_spec = parsed_args["n-spec"]
+n_segments = parsed_args["n-segments"]
+n_fourier = parsed_args["n-fourier"]
+fg_scale = parsed_args["fg-scale"]
+n_chain = parsed_args["n-chain"]
+n_mcmc = parsed_args["n-mcmc"]
+target_arate = parsed_args["target-arate"]
 
-fg_scale = 1e-6 # Empirically determined fg rate estimate, based on not constraining the posterior too much.
-
-n_chain = 8
-n_mcmc = 1000
-
-target_arate = 0.8
+trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 
 ## Set up distributed sampling
 using Distributed
@@ -108,4 +144,4 @@ trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_
 println("Minimum ESS: ", minimum(ess(trace)))
 
 ## Save the chains
-to_netcdf(trace, joinpath(@__DIR__, "..", "data", "J0740_trace.nc"))
+to_netcdf(trace, joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc"))
