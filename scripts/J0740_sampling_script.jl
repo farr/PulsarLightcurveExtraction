@@ -1,6 +1,6 @@
 ## Set up script parameters
 n_spec = 16
-n_segments = nothing
+n_segments = 100 # nothing
 n_fourier = 4
 
 fg_scale = 1e-6 # Empirically determined fg rate estimate, based on not constraining the posterior too much.
@@ -24,6 +24,7 @@ end
     using Enzyme
     using HDF5
     using LinearAlgebra
+    using Mooncake
     using NCDatasets
     using PulsarLightcurveExtraction
     using Turing
@@ -85,7 +86,7 @@ est_log_bg, est_log_bg_uncert = PulsarLightcurveExtraction.estimate_log_bg(event
 est_log_fg_const, est_log_fg_const_uncert = PulsarLightcurveExtraction.estimate_log_fg_const(event_segment_indices, event_spectral_indices, energy_bin_areas, segment_Ts)
 
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_fg_const, fg_scale)
+model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_bg_uncert, est_log_fg_const, fg_scale)
 
 if n_chain > 1
     println("Running with $n_chain chains in distributed mode...")
@@ -95,13 +96,16 @@ end
 
 ## Sample it
 if n_chain > 1
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), MCMCDistributed(), n_mcmc, n_chain)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), MCMCDistributed(), n_mcmc, n_chain) # AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 else
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), n_mcmc)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), n_mcmc)
 end
 
 ## Package it up
-trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_bg => (:energy,), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers))
+trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_bg => (:energy,), :dlog_bg => (:energy, :segment), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers))
+
+## Check minimum ESS:
+println("Minimum ESS: ", minimum(ess(trace)))
 
 ## Save the chains
 to_netcdf(trace, joinpath(@__DIR__, "..", "data", "J0740_trace.nc"))

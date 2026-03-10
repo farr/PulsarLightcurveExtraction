@@ -319,7 +319,7 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_fg_const, fg_scale)
+@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_bg_uncert, est_log_fg_const, fg_scale)
     @assert size(cos_design_matrix, 2) == size(sin_design_matrix, 2) "Cosine and sine design matrices should have the same number of columns."
 
     _, n_fourier = size(cos_design_matrix)
@@ -343,9 +343,18 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
     for j in axes(log_bg, 2)
         for i in axes(log_bg, 1)
-            dlog_bg[i,j] ~ Normal(0, 1)
-            log_bg[i,j] := mu_log_bg[i] + sigma_log_bg[i] * dlog_bg[i,j]
+            dlog_bg[i,j] ~ Flat()
+
+            wt_l = sigma_log_bg[i]^2
+            wt_p = est_log_bg_uncert[i,j]^2
+
+            loc = (wt_l * est_log_bg[i,j] + wt_p * mu_log_bg[i]) / (wt_l + wt_p)
+            scale = sigma_log_bg[i]*est_log_bg_uncert[i,j] / sqrt(wt_l + wt_p)
+
+            log_bg[i,j] := loc + scale * dlog_bg[i,j]
             bg[i,j] := exp(log_bg[i,j])
+
+            Turing.@addlogprob! logpdf(Normal(mu_log_bg[i], sigma_log_bg[i]), log_bg[i,j]) + log(scale)
         end
     end
 
