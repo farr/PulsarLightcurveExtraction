@@ -46,28 +46,20 @@ target_arate = parsed_args["target-arate"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 
-## Set up distributed sampling
-using Distributed
-if n_chain > 1
-    addprocs(n_chain)
-end
+## Load packages
+using ArviZ
+using DimensionalData
+using FITSIO
+using Enzyme
+using HDF5
+using LinearAlgebra
+using Mooncake
+using NCDatasets
+using PulsarLightcurveExtraction
+using Turing
 
-## Load packages everywhere
-@everywhere begin
-    using ArviZ
-    using DimensionalData
-    using FITSIO
-    using Enzyme
-    using HDF5
-    using LinearAlgebra
-    using Mooncake
-    using NCDatasets
-    using PulsarLightcurveExtraction
-    using Turing
-
-    # Otherwise the sampler will try to use multiple threads for linear algebra, alas!
-    BLAS.set_num_threads(1)
-end
+# Otherwise the sampler will try to use multiple threads for linear algebra, alas!
+BLAS.set_num_threads(1)
 
 ## Load data
 event_time, event_phase, event_pi, segment_start, segment_stop = FITS(joinpath(@__DIR__, "..", "data", "J0740_merged_phase_0.25-3keV.fits.gz"), "r") do f
@@ -122,20 +114,12 @@ est_log_bg, est_log_bg_uncert = PulsarLightcurveExtraction.estimate_log_bg(event
 est_log_fg_const, est_log_fg_const_uncert = PulsarLightcurveExtraction.estimate_log_fg_const(event_segment_indices, event_spectral_indices, energy_bin_areas, segment_Ts)
 
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_bg_uncert, est_log_fg_const, fg_scale)
+model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_fg_const, fg_scale)
 
-if n_chain > 1
-    println("Running with $n_chain chains in distributed mode...")
-else
-    println("Running with a single chain.")
-end
+println("Running with $n_chain chains using $(Threads.nthreads()) threads...")
 
 ## Sample it
-if n_chain > 1
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), MCMCDistributed(), n_mcmc, n_chain; callback=flush_stderr_stdout_callback)
-else
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), n_mcmc; callback=flush_stderr_stdout_callback)
-end
+chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), MCMCThreads(), n_mcmc, n_chain; callback=flush_stderr_stdout_callback) # AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 
 ## Package it up
 trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_bg => (:energy,), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :log_bg_uncentered => (:energy, :segment), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers))

@@ -9,4 +9,4 @@
 
 mkdir -p logs
 
-julia --project=. scripts/J0740_sampling_script.jl
+julia --threads $SLURM_CPUS_PER_TASK --project=. scripts/J0740_sampling_script.jl --n-segments 100
