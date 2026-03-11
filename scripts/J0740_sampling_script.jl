@@ -37,10 +37,10 @@ end
 
 ## Set up script parameters
 n_spec = parsed_args["n-spec"]
-n_segments = 10 # parsed_args["n-segments"]
+n_segments = parsed_args["n-segments"]
 n_fourier = parsed_args["n-fourier"]
 fg_scale = parsed_args["fg-scale"]
-n_chain = 1 # parsed_args["n-chain"]
+n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 
