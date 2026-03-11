@@ -319,7 +319,7 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_bg_uncert, est_log_fg_const, fg_scale)
+@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_fg_const, fg_scale)
     @assert size(cos_design_matrix, 2) == size(sin_design_matrix, 2) "Cosine and sine design matrices should have the same number of columns."
 
     _, n_fourier = size(cos_design_matrix)
@@ -338,31 +338,26 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         sigma_log_bg[i] ~ Exponential(1)
     end
 
-    dlog_bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
+    log_fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
+    fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
+    for i in eachindex(fg_coeff_const)
+        log_fg_coeff_const[i] ~ Normal(est_log_fg_const[i], 2)
+        fg_coeff_const[i] := exp(log_fg_coeff_const[i])
+    end
+    
+    bin_rate = Matrix{Float64}(undef, n_eg_bin, n_seg)
     log_bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
     bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
     for j in axes(log_bg, 2)
         for i in axes(log_bg, 1)
-            dlog_bg[i,j] ~ Flat()
+            fg_rate = exp(log_fg_coeff_const[i])*energy_bin_areas[i,j]
 
-            wt_l = sigma_log_bg[i]^2
-            wt_p = est_log_bg_uncert[i,j]^2
+            bin_rate[i,j] ~ FlatPos(fg_rate)
+            bg[i,j] := bin_rate[i,j] - fg_rate
+            log_bg[i,j] := log(bg[i,j])
 
-            loc = (wt_l * est_log_bg[i,j] + wt_p * mu_log_bg[i]) / (wt_l + wt_p)
-            scale = sigma_log_bg[i]*est_log_bg_uncert[i,j] / sqrt(wt_l + wt_p)
-
-            log_bg[i,j] := loc + scale * dlog_bg[i,j]
-            bg[i,j] := exp(log_bg[i,j])
-
-            Turing.@addlogprob! logpdf(Normal(mu_log_bg[i], sigma_log_bg[i]), log_bg[i,j]) + log(scale)
+            Turing.@addlogprob! logpdf(Normal(mu_log_bg[i], sigma_log_bg[i]), log_bg[i,j]) - log_bg[i,j]
         end
-    end
-
-    log_fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
-    fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
-    for i in eachindex(log_fg_coeff_const)
-        log_fg_coeff_const[i] ~ Normal(est_log_fg_const[i], 2) # Factor-of-ten around estimated foreground---which is just total counts divided by exposure, so assuming no background.
-        fg_coeff_const[i] := exp(log_fg_coeff_const[i])
     end
 
     dsigma_fg ~ Exponential(1)

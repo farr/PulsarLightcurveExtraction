@@ -122,7 +122,7 @@ est_log_bg, est_log_bg_uncert = PulsarLightcurveExtraction.estimate_log_bg(event
 est_log_fg_const, est_log_fg_const_uncert = PulsarLightcurveExtraction.estimate_log_fg_const(event_segment_indices, event_spectral_indices, energy_bin_areas, segment_Ts)
 
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_bg_uncert, est_log_fg_const, fg_scale)
+model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_fg_const, fg_scale)
 
 if n_chain > 1
     println("Running with $n_chain chains in distributed mode...")
@@ -138,7 +138,7 @@ else
 end
 
 ## Package it up
-trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_bg => (:energy,), :dlog_bg => (:energy, :segment), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers))
+trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_bg => (:energy,), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :bin_rate => (:energy, :segment), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers))
 
 ## Check minimum ESS:
 println("Minimum ESS: ", minimum(ess(trace)))
