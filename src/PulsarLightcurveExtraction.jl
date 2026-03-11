@@ -339,6 +339,10 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         sigma_log_bg[i] ~ Exponential(1)
     end
 
+    corr_chol ~ LKJCholesky(n_eg_bin, 2.0)
+    L_cov := Diagonal(sigma_log_bg) * corr_chol.L
+    cov_log_bg := L_cov * L_cov'
+
     log_fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
     fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
     for i in eachindex(fg_coeff_const)
@@ -349,11 +353,13 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     log_bg_uncentered = Matrix{Float64}(undef, n_eg_bin, n_seg)
     log_bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
     bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
-    for j in axes(log_bg, 2)
-        for i in axes(log_bg, 1)
-            # N(0,1) here means N(mu, sigma) for log_bg.
+    for j in axes(log_bg_uncentered, 2)
+        for i in axes(log_bg_uncentered, 1)
             log_bg_uncentered[i, j] ~ Normal(0, 1)
-            log_bg[i, j] := mu_log_bg[i] + log_bg_uncentered[i, j] * sigma_log_bg[i]
+        end
+        lbg_j = mu_log_bg .+ (L_cov * log_bg_uncentered[:, j])
+        for i in axes(log_bg, 1)
+            log_bg[i, j] := lbg_j[i]
             bg[i, j] := exp(log_bg[i, j])
         end
     end

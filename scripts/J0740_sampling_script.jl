@@ -37,10 +37,10 @@ end
 
 ## Set up script parameters
 n_spec = parsed_args["n-spec"]
-n_segments = parsed_args["n-segments"]
+n_segments = 10 # parsed_args["n-segments"]
 n_fourier = parsed_args["n-fourier"]
 fg_scale = parsed_args["fg-scale"]
-n_chain = parsed_args["n-chain"]
+n_chain = 1 # parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 
@@ -122,7 +122,7 @@ println("Running with $n_chain chains using $(Threads.nthreads()) threads...")
 chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), MCMCThreads(), n_mcmc, n_chain; callback=flush_stderr_stdout_callback) # AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 
 ## Package it up
-trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_bg => (:energy,), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :log_bg_uncentered => (:energy, :segment), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers))
+trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_bg => (:energy,), Symbol("corr_chol.L") => (:energy, :energy2), :cov_log_bg => (:energy, :energy2), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :log_bg_uncentered => (:energy, :segment), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers, :energy2 => spec_bin_centers))
 
 ## Check minimum ESS:
 println("Minimum ESS: ", minimum(ess(trace)))
