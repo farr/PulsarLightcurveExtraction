@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(julia --project=. -e \"using Pkg; Pkg.status\\(\\)\")",
+      "Bash(julia --project=. -e \"using Pkg; Pkg.precompile\\(\\)\")",
+      "Bash(julia --project=. -e \"using Mooncake\")",
+      "Read(//Users/wfarr/.julia/packages/Mooncake/**)",
+      "Bash(julia --project=. --compiled-modules=no -e \"using Mooncake\")",
+      "Bash(julia -e \"using Mooncake\")",
+      "Bash(julia --project=. -e \"using Pkg; Pkg.update\\(\"\"Mooncake\"\"\\)\")",
+      "Bash(julia --project=. -e \":*)"
+    ]
+  }
+}

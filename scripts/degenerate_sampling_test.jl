@@ -10,7 +10,7 @@ using StatsFuns
 using Turing
 
 ## Set up the data
-N = 1000
+N = 100
 log_bg = randn(N)
 
 log_fg = randn()
@@ -28,19 +28,19 @@ log_total_obs = log_total .+ randn(N)
 
     log_bg_raw = Vector{Float64}(undef, length(log_total_obs))
     log_bg = Vector{Float64}(undef, length(log_total_obs))
-     for i in eachindex(log_bg_raw)
-        log_bg_raw[i] ~ Normal(0,1)
-        log_bg[i] := mu_log_bg + log_bg_raw[i] * sigma_log_bg
+
+    for i in eachindex(log_bg)
+        log_bg_raw[i] ~ Normal(0, 1)
+        log_bg[i] := mu_log_bg + sigma_log_bg * log_bg_raw[i]
     end
 
     for i in eachindex(log_total_obs)
-        log_total = logaddexp(log_bg[i], log_fg_proj[i] + log_fg)
-        log_total_obs[i] ~ Normal(log_total, 1.0)
+        log_total_obs[i] ~ Normal(logaddexp(log_bg[i], log_fg_proj[i] + log_fg), 1.0)
     end
 end
 
 ## Sample it
-chain = sample(model(log_total_obs, log_fg_proj), NUTS(1000, 0.9; adtype=AutoMooncake()), 1000)
+chain = sample(model(log_total_obs, log_fg_proj), NUTS(1000, 0.8; adtype=AutoMooncake()), 1000)
 
 ## Convert to InferenceData
 trace = from_mcmcchains(chain; coords=Dict(:log_bg => (:obs,)), dims=Dict(:obs => 1:length(log_total_obs)))
@@ -51,7 +51,7 @@ minimum(ess(trace))
 ## Plot it obvious
 PulsarLightcurveExtraction.traceplot(trace)
 
-## Parameter Plot (obvious)
+## Parameter Plot
 df = DataFrame(Dict(
     :log_fg => vec(trace.posterior.log_fg),
     :mu_log_bg => vec(trace.posterior.mu_log_bg),

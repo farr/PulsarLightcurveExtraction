@@ -346,27 +346,15 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         fg_coeff_const[i] := exp(log_fg_coeff_const[i])
     end
     
-    dlog_bin_rate_uncentered = Matrix{Float64}(undef, n_eg_bin, n_seg)
-    log_bin_rate = Matrix{Float64}(undef, n_eg_bin, n_seg)
+    log_bg_uncentered = Matrix{Float64}(undef, n_eg_bin, n_seg)
     log_bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
     bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
     for j in axes(log_bg, 2)
         for i in axes(log_bg, 1)
-            log_fg_rate = log_fg_coeff_const[i] + log(energy_bin_areas[i,j])
-
-            wt_l = sigma_log_bg[i]^2
-            wt_p = est_log_bg_uncert[i,j]^2
-
-            loc = (wt_l * est_log_bg[i,j] + wt_p * mu_log_bg[i]) / (wt_l + wt_p)
-            scale = sigma_log_bg[i] * est_log_bg_uncert[i,j] / sqrt(wt_l + wt_p)
-
-            
-            dlog_bin_rate_uncentered[i,j] ~ FlatPos(-loc/scale)
-            log_bin_rate[i,j] := log_fg_rate + loc + scale*dlog_bin_rate_uncentered[i,j]
-            log_bg[i,j] := logdiffexp(log_bin_rate[i,j], log_fg_rate)
-            bg[i,j] := exp(log_bg[i,j])
-
-            Turing.@addlogprob! logpdf(Normal(mu_log_bg[i], sigma_log_bg[i]), log_bg[i,j]) + log_bin_rate[i,j] - log_bg[i,j]
+            # N(0,1) here means N(mu, sigma) for log_bg.
+            log_bg_uncentered[i, j] ~ Normal(0, 1)
+            log_bg[i, j] := mu_log_bg[i] + log_bg_uncentered[i, j] * sigma_log_bg[i]
+            bg[i, j] := exp(log_bg[i, j])
         end
     end
 

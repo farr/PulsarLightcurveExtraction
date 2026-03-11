@@ -132,13 +132,13 @@ end
 
 ## Sample it
 if n_chain > 1
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), MCMCDistributed(), n_mcmc, n_chain; callback=flush_stderr_stdout_callback) # AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), MCMCDistributed(), n_mcmc, n_chain; callback=flush_stderr_stdout_callback)
 else
-    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), n_mcmc; callback=flush_stderr_stdout_callback)
+    chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), n_mcmc; callback=flush_stderr_stdout_callback)
 end
 
 ## Package it up
-trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_bg => (:energy,), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :dlog_bin_rate => (:energy, :segment), :log_bin_rate => (:energy, :segment), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers))
+trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_bg => (:energy,), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :log_bg_uncentered => (:energy, :segment), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers))
 
 ## Check minimum ESS:
 println("Minimum ESS: ", minimum(ess(trace)))
