@@ -396,15 +396,16 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     end
 
     for i in eachindex(event_spectral_indices)
-        rate = fg_coeff_const[event_spectral_indices[i]]
+        fg_rate = fg_coeff_const[event_spectral_indices[i]]
         for k in 1:n_fourier
-            rate += cos_design_matrix[i, k] * fg_coeffs_cos[event_spectral_indices[i], k] + sin_design_matrix[i, k] * fg_coeffs_sin[event_spectral_indices[i], k]
+            fg_rate += cos_design_matrix[i, k] * fg_coeffs_cos[event_spectral_indices[i], k] + sin_design_matrix[i, k] * fg_coeffs_sin[event_spectral_indices[i], k]
         end
-        rate *= energy_bin_areas[event_spectral_indices[i], event_segment_indices[i]]
+        fg_rate *= energy_bin_areas[event_spectral_indices[i], event_segment_indices[i]]
 
-        rate += bg[event_spectral_indices[i], event_segment_indices[i]]
+        bg_rate += bg[event_spectral_indices[i], event_segment_indices[i]]
 
-        if rate <= 0
+        rate = fg_rate + bg_rate
+        if rate <= 0 # Mathematical error if rate <= 0 because of log(...).  Really should ensure *foreground* rate is positive, but that can cause issues with sampling.
             # Cannot have negative rate!
             Turing.@addlogprob! -Inf
         else
