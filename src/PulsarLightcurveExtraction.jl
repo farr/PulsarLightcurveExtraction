@@ -320,18 +320,30 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_fg_const, fg_scale)
+@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas; fractional_variability=0.1)
     @assert size(cos_design_matrix, 2) == size(sin_design_matrix, 2) "Cosine and sine design matrices should have the same number of columns."
 
-    _, n_fourier = size(cos_design_matrix)
+    n_counts, n_fourier = size(cos_design_matrix)
     n_seg = length(segment_Ts)
     n_eg_bin = maximum(event_spectral_indices)
 
-    mean_est_log_bg = vec(mean(est_log_bg, dims=2))
+    T = sum(segment_Ts)
+    cts_per_second = n_counts / T
+    
+    exposure = sum(energy_bin_areas .* reshape(segment_Ts, (1, :)))
+    cts_per_second_per_cm2 = n_counts / exposure
 
+    mu_mu_log_bg ~ Normal(log(cts_per_second), 4)
+    sigma_mu_log_bg ~ Exponential(2)
+
+    mu_log_fg_const ~ Normal(log(cts_per_second_per_cm2), 4)
+    sigma_log_fg_const ~ Exponential(2)
+
+    mu_log_bg_uncentered = Vector{Float64}(undef, n_eg_bin)
     mu_log_bg = Vector{Float64}(undef, n_eg_bin)
     for i in eachindex(mu_log_bg)
-        mu_log_bg[i] ~ Normal(mean_est_log_bg[i], 2)
+        mu_log_bg_uncentered[i] ~ Normal(0, 1)
+        mu_log_bg[i] := mu_mu_log_bg + sigma_mu_log_bg * mu_log_bg_uncentered[i]
     end
     
     sigma_log_bg = Vector{Float64}(undef, n_eg_bin)
@@ -343,10 +355,12 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     L_cov := Diagonal(sigma_log_bg) * corr_chol.L
     cov_log_bg := L_cov * L_cov'
 
+    log_fg_coeff_const_uncentered = Vector{Float64}(undef, n_eg_bin)
     log_fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
     fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
     for i in eachindex(fg_coeff_const)
-        log_fg_coeff_const[i] ~ Normal(est_log_fg_const[i], 2)
+        log_fg_coeff_const_uncentered[i] ~ Normal(0, 1)
+        log_fg_coeff_const[i] := mu_log_fg_const + sigma_log_fg_const * log_fg_coeff_const_uncentered[i]
         fg_coeff_const[i] := exp(log_fg_coeff_const[i])
     end
     
@@ -365,7 +379,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     end
 
     dsigma_fg ~ Exponential(1)
-    sigma_fg := fg_scale * dsigma_fg
+    sigma_fg := fractional_variability * cts_per_second_per_cm2 * dsigma_fg
 
     dfg_coeffs_cos = Matrix{Float64}(undef, n_eg_bin, n_fourier)
     dfg_coeffs_sin = Matrix{Float64}(undef, n_eg_bin, n_fourier)

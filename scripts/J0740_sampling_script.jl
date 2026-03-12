@@ -15,10 +15,10 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Number of Fourier terms"
             arg_type = Int
             default = 4
-        "--fg-scale"
-            help = "Foreground scale (empirically determined fg rate estimate)"
+        "--fractional-variability"
+            help = "Fractional variability in the lightcurve"
             arg_type = Float64
-            default = 1e-6
+            default = 0.1
         "--n-chain"
             help = "Number of MCMC chains"
             arg_type = Int
@@ -39,7 +39,7 @@ end
 n_spec = parsed_args["n-spec"]
 n_segments = parsed_args["n-segments"]
 n_fourier = parsed_args["n-fourier"]
-fg_scale = parsed_args["fg-scale"]
+fractional_variability = parsed_args["fractional-variability"]
 n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
@@ -109,12 +109,8 @@ end
 ## Total exposure over all segments in use
 energy_bin_areas = PulsarLightcurveExtraction.energy_bin_areas(spec_bins_pi, segment_start, segment_stop, arf_start, arf_stop, arf_e_low, arf_e_high, arf_response)
 
-## Estimate helper quantities from the background
-est_log_bg, est_log_bg_uncert = PulsarLightcurveExtraction.estimate_log_bg(event_segment_indices, event_spectral_indices, segment_start, segment_stop)
-est_log_fg_const, est_log_fg_const_uncert = PulsarLightcurveExtraction.estimate_log_fg_const(event_segment_indices, event_spectral_indices, energy_bin_areas, segment_Ts)
-
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas, est_log_bg, est_log_fg_const, fg_scale)
+model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas; fractional_variability=fractional_variability)
 
 println("Running with $n_chain chains using $(Threads.nthreads()) threads...")
 
