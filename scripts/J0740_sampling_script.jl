@@ -119,10 +119,10 @@ model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, event_segment_indi
 println("Running with $n_chain chains using $(Threads.nthreads()) threads...")
 
 ## Sample it
-chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoMooncake()), MCMCThreads(), n_mcmc, n_chain; callback=flush_stderr_stdout_callback) # AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
+chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), MCMCThreads(), n_mcmc, n_chain; callback=flush_stderr_stdout_callback)
 
 ## Package it up
-trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_bg => (:energy,), Symbol("corr_chol.L") => (:energy, :energy2), :cov_log_bg => (:energy, :energy2), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :log_bg_uncentered => (:energy, :segment), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers, :energy2 => spec_bin_centers))
+trace = from_mcmcchains(chains; dims=Dict(:mu_log_bg => (:energy, ), :sigma_log_bg => (:energy,), Symbol("corr_chol.L") => (:energy, :energy2), :L_cov => (:energy, :energy2), :cov_log_bg => (:energy, :energy2), :log_fg_coeff_const => (:energy,), :fg_coeff_const => (:energy,), :log_bg_uncentered => (:energy, :segment), :log_bg => (:energy, :segment), :bg => (:energy, :segment), :dfg_coeffs_cos => (:energy, :fourier), :dfg_coeffs_sin => (:energy, :fourier), :fg_coeffs_cos => (:energy, :fourier), :fg_coeffs_sin => (:energy, :fourier)), coords=Dict(:fourier => 1:n_fourier, :segment => 1:n_segments, :energy => spec_bin_centers, :energy2 => spec_bin_centers))
 
 ## Check minimum ESS:
 println("Minimum ESS: ", minimum(ess(trace)))
