@@ -7,3 +7,4 @@ data/*.nc
 data/*.h5
 logs/*.err
 logs/*.out
+logs/*.log

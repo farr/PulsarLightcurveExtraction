@@ -9,9 +9,9 @@
 
 mkdir -p logs
 
-julia --threads $SLURM_CPUS_PER_TASK --project=. scripts/J0740_sampling_script.jl --n-segments 10 > logs/J0740_%j_10.log 2>&1 &
-julia --threads $SLURM_CPUS_PER_TASK --project=. scripts/J0740_sampling_script.jl --n-segments 100 > logs/J0740_%j_100.log 2>&1 &
-julia --threads $SLURM_CPUS_PER_TASK --project=. scripts/J0740_sampling_script.jl --n-segments 1000 > logs/J0740_%j_1000.log 2>&1 &
-julia --threads $SLURM_CPUS_PER_TASK --project=. scripts/J0740_sampling_script.jl > logs/J0740_%j.log 2>&1 &
+julia --threads $SLURM_CPUS_PER_TASK --project=. scripts/J0740_sampling_script.jl --n-segments 10 > logs/J0740_10.log 2>&1 &
+julia --threads $SLURM_CPUS_PER_TASK --project=. scripts/J0740_sampling_script.jl --n-segments 100 > logs/J0740_100.log 2>&1 &
+julia --threads $SLURM_CPUS_PER_TASK --project=. scripts/J0740_sampling_script.jl --n-segments 1000 > logs/J0740_1000.log 2>&1 &
+julia --threads $SLURM_CPUS_PER_TASK --project=. scripts/J0740_sampling_script.jl > logs/J0740.log 2>&1 &
 
 wait
