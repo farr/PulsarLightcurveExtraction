@@ -2,6 +2,7 @@ module PulsarLightcurveExtraction
 
 using ArviZ
 using Bijectors
+using BSplineKit
 using Colors
 using DimensionalData
 using Distributions
@@ -56,6 +57,46 @@ function cos_sin_matrices(phases, n_fourier)
     return (cos_matrix, sin_matrix)
 end
 
+"""
+    construct_spline_spectral_bases(e_min, e_max, n_spec, spec_order, e_low, e_high, arf_response, rmf_response)
+
+Constructs spline bases for spectral modeling given energy bounds, number of
+spectral bins, spline order, and instrument responses (ARF and RMF).  Returns
+`(spline_to_pi_foreground, spline_to_pi_background)`, both of shape `(num_pi,
+num_basis, num_segments)`, which give the mapping from spline basis coefficients
+to PI indices within each ARF/RMF time segment.  The first matrix returned
+incorporates the ARF effective areas, so is appropriate for converting a
+spline-based spectral model with coefficients expressed in counts per second per
+square cm per keV to expected counts per second in each PI bin; the second
+matrix returned incorporates only the RMF, so is appropriate for converting a
+spline-based spectral model with coefficients expressed in counts per second per
+keV to expected counts per second in each PI bin.  The latter is used to model
+the background spectrum, which need not respond to the effective area because it
+need not follow the optical path of the foreground photons.
+"""
+function construct_spline_spectral_bases(e_min, e_max, n_spec, spec_order, e_low, e_high, arf_response, rmf_response)
+    egs = 0.5 .* (e_low .+ e_high)
+    
+    knots = exp.(range(log(e_min), log(e_max), length=n_spec-2))
+    basis = BSplineBasis(BSplineOrder(spec_order), knots)
+
+    spline_to_energy = zeros(Float32, length(egs), length(basis))
+    for (i, e) in enumerate(egs)
+        j, vals = basis(e)
+        if j >= spec_order
+            spline_to_energy[i, j:-1:j-spec_order+1] .= vals
+        end # Otherwise outside the range of the basis functions, so all zero.
+    end
+    spline_to_energy = spline_to_energy .* reshape(e_high .- e_low, (:, 1))
+
+    combined_response = rmf_response .* reshape(arf_response, (1, size(arf_response)...))
+
+    spline_to_pi_combined = stack([combined_response[:,:,t] * spline_to_energy for t in axes(combined_response, 3)], dims=3)
+    spline_to_pi = stack([rmf_response[:,:,t] * spline_to_energy for t in axes(rmf_response, 3)], dims=3)
+
+    return (spline_to_pi_combined, spline_to_pi)
+end
+
 """ 
     segment_indices(times, segment_starts, segment_ends)
 
@@ -70,22 +111,68 @@ function segment_indices(times, segment_starts, segment_ends)
 end
 
 """
-    spectral_indices(event_pi, n_spec)
+    spectral_design_matrices(times, event_pi, fg_spline_basis, bg_spline_basis, spec_starts, spec_ends)
 
-Given event PI values and number of spectral bins, return the spectral bin index
-for each event and the bin edges in PI.
+Construct design matrices for foreground and background spectral models given
+event times, PI channels, spline bases, and segment start and end times. Returns
+`(fg_design_matrix, bg_design_matrix)` where each has shape `(n_events,
+n_spline_basis)`, and the `i`th row of each corresponds to the spline basis
+evaluated at the PI channel of the `i`th event, with the appropriate segment
+index determined by the event time.  The `fg` matrix incorporates the ARF
+effective area for the source, while the `bg` matrix does not.
 """
-function spectral_indices(event_pi, n_spec)
-    min_pi = minimum(event_pi)
-    max_pi = maximum(event_pi)
-    bins = exp.(range(log(min_pi), stop=log(max_pi), length=n_spec+1))
+function spectral_design_matrices(times, event_pi, fg_spline_basis, bg_spline_basis, spec_starts, spec_ends)
+    n_events = length(times)
+    n_spec = size(fg_spline_basis, 2)
 
-    # Because we exp(range(log(...))), want to make sure the first and last bins are exactly min and max, to avoid any numerical issues with events that have PI values at the edges.
-    bins[1] = min_pi
-    bins[end] = max_pi 
+    fg_design_matrix = zeros(Float64, n_events, n_spec)
+    bg_design_matrix = zeros(Float64, n_events, n_spec)
 
-    event_spectral_indices = searchsortedfirst.(Ref(bins[2:end]), event_pi)
-    return event_spectral_indices, bins
+    for i in 1:n_events
+        segment_bin = searchsortedfirst(spec_starts, times[i]) - 1
+        @assert times[i] >= spec_starts[segment_bin] && times[i] <= spec_ends[segment_bin] "Event time does not fall within any segment bin."
+
+        fg_design_matrix[i, :] .= fg_spline_basis[event_pi[i], :, segment_bin]
+        bg_design_matrix[i, :] .= bg_spline_basis[event_pi[i], :, segment_bin]
+    end
+
+    return (fg_design_matrix, bg_design_matrix)
+end
+
+"""
+    foreground_background_exposure(pi_min, pi_max, segment_starts, segment_ends, arf_starts, arf_ends, fg_spline_basis, bg_spline_basis)
+
+Returns `(fg_exposure, bg_exposure)` where `fg_exposure` is a vector of size
+`n_spec` that gives the total exposure to each of the spectral basis elements.
+For the foreground elements, this is the total exposure in square-cm seconds;
+for the background is it the exposure per segment in seconds.  This is used to
+compute the expected number of counts from the constant term in the foreground,
+and the expected number of counts from the background in each segment.
+"""
+function foreground_background_exposure(pi_min, pi_max, segment_starts, segment_ends, arf_starts, arf_ends, fg_spline_basis, bg_spline_basis)
+    n_segments = length(segment_starts)
+    n_spec = size(fg_spline_basis, 2)
+
+    fg_exposure = zeros(Float64, n_spec)
+    bg_exposure = zeros(Float64, n_spec, n_segments)
+
+    summed_fg_basis = dropdims(sum(fg_spline_basis[pi_min:pi_max, :, :], dims=1), dims=1)
+    summed_bg_basis = dropdims(sum(bg_spline_basis[pi_min:pi_max, :, :], dims=1), dims=1)
+
+    for i in 1:n_segments
+        segment_start = segment_starts[i]
+        segment_end = segment_ends[i]
+
+        T = segment_end - segment_start
+
+        arf_bin = searchsortedfirst(arf_ends, segment_start)
+        @assert segment_start >= arf_starts[arf_bin] && segment_end <= arf_ends[arf_bin] "Segment does not fall within any ARF bin."
+
+        fg_exposure .= fg_exposure .+ T .* summed_fg_basis[:, arf_bin]
+        bg_exposure[:, i] = T .* summed_bg_basis[:, arf_bin]
+    end
+
+    return (fg_exposure, bg_exposure)
 end
 
 """
@@ -125,105 +212,10 @@ function phase_histogram_rates(phases, exposure_time)
     return bin_edges, rates, rate_uncertainty
 end
 
-""" 
-    event_areas(times, pi_indices, arf_starts, arf_ends, arf_e_low, arf_e_high, arf_areas)
-
-Given event times and PI indices, along with ARF start and end times, high
-energy bounds, and area matrix, return the effective area for each event.
-"""
-function event_areas(times, spectral_indices, pi_bins, arf_starts, arf_ends, arf_e_low, arf_e_high, arf_areas)
-    areas = Float64[]
-    for i in eachindex(times)
-        iarf = searchsortedfirst(arf_ends, times[i])
-        @assert times[i] >= arf_starts[iarf] && times[i] <= arf_ends[iarf]
-        eg_low = PI_TO_KEV*pi_bins[spectral_indices[i]]
-        eg_high = PI_TO_KEV*pi_bins[spectral_indices[i]+1]
-        jarf_low = searchsortedfirst(arf_e_high, eg_low) # PI to keV
-        jarf_high = searchsortedfirst(arf_e_high, eg_high)
-        push!(areas, mean(arf_areas[jarf_low:jarf_high, iarf]))
-    end
-    return areas
-end
-
-""" 
-    estimate_log_bg(event_segment_indices, event_spectral_indices, segment_starts, segment_ends)
-
-Given event segment indices, event spectral indices, and segment start and end
-times, estimate the log background rate and its uncertainty in each spectral bin
-and each segment using a simple counting method with a Jeffreys prior.
-"""
-function estimate_log_bg(event_segment_indices, event_spectral_indices, segment_starts, segment_ends)
-    n_segments = length(segment_starts)
-    n_spec = maximum(event_spectral_indices)
-    segment_Ts = reshape(segment_ends .- segment_starts, (1, :))
-    counts_per_segment = zeros(Int, n_spec, n_segments)
-    for (seg, spec) in zip(event_segment_indices, event_spectral_indices)
-        counts_per_segment[spec, seg] += 1
-    end
-    est_log_bg = log.(counts_per_segment .+ 0.5) .- log.(segment_Ts)
-    est_log_bg_uncert = 1.0 ./ sqrt.(counts_per_segment .+ 0.5)
-    return est_log_bg, est_log_bg_uncert
-end
-
-"""
-    estimate_log_fg_const(event_segment_indices, event_spectral_indices, energy_bin_areas, segment_Ts)
-
-Returns an estimate of the log_fg_const and associated uncertainty, attributing
-all counts in each energy bin to the foreground.  This is used to scale the
-sampler variables, so need not be particularly accurate.
-"""
-function estimate_log_fg_const(event_segment_indices, event_spectral_indices, energy_bin_areas, segment_Ts)
-    n_spec = size(energy_bin_areas, 1)
-
-    counts_per_spec = zeros(Int, n_spec)
-    for (seg, spec) in zip(event_segment_indices, event_spectral_indices)
-        counts_per_spec[spec] += 1
-    end
-
-    energy_bin_exposure = sum(energy_bin_areas .* reshape(segment_Ts, (1, :)), dims=2)
-
-    est_log_fg_const = log.(counts_per_spec .+ 0.5) .- log.(energy_bin_exposure)
-    est_log_fg_const_uncert = 1.0 ./ sqrt.(counts_per_spec .+ 0.5)
-    return est_log_fg_const, est_log_fg_const_uncert
-end
-
-"""
-    energy_bin_areas(spec_bins, segment_starts, segment_ends, arf_starts, arf_ends, arf_e_low, arf_e_high, arf_area)
-
-Returns the effective area for each energy bin at each segement by averaging the
-ARF in that segment over each energy bin.
-"""
-function energy_bin_areas(spec_bins, segment_starts, segment_ends, arf_starts, arf_ends, arf_e_low, arf_e_high, arf_area)
-    exposures = zeros(Float64, length(spec_bins)-1, length(segment_starts))
-
-    for i in axes(exposures, 2)
-        start = segment_starts[i]
-        stop = segment_ends[i]
-
-        iarf_start = searchsortedfirst(arf_ends, start)
-        iarf_stop = searchsortedfirst(arf_ends, stop)
-        @assert iarf_start == iarf_stop "Segment $i overlaps multiple ARF intervals, which is not currently supported."
-
-        for j in axes(exposures, 1)
-            pi_low = spec_bins[j]
-            pi_high = spec_bins[j+1]
-
-            e_low = PI_TO_KEV * pi_low
-            e_high = PI_TO_KEV * pi_high
-
-            jarf_low = searchsortedfirst(arf_e_high, e_low)
-            jarf_high = searchsortedfirst(arf_e_high, e_high)
-
-            exposures[j, i] += mean(arf_area[jarf_low:jarf_high, iarf_start])
-        end
-    end
-
-    exposures
-end
-
 raw"""
     spec_fourier_model(design_matrix, event_segment_indices, event_spectral_indices, event_sensitive_areas, segment_Ts, energy_bin_exposure, est_log_bg, est_log_bg_uncert, fg_scale)
 
+WARNING: this docstring is out of date and needs updating!!
 A spectral-photometric model for a pulsar phasecurve with a varying background.
 
 The background is modeled as a constant rate of detected photons in each
@@ -320,109 +312,71 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, event_segment_indices, event_spectral_indices, segment_Ts, energy_bin_areas; fractional_variability=0.1)
-    @assert size(cos_design_matrix, 2) == size(sin_design_matrix, 2) "Cosine and sine design matrices should have the same number of columns."
-
+@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure; fractional_variability=0.1)
     n_counts, n_fourier = size(cos_design_matrix)
-    n_seg = length(segment_Ts)
-    n_eg_bin = maximum(event_spectral_indices)
+    n_spec, n_seg = size(bg_exposure)
 
-    T = sum(segment_Ts)
-    cts_per_second = n_counts / T
-    
-    exposure = sum(energy_bin_areas .* reshape(segment_Ts, (1, :)))
-    cts_per_second_per_cm2 = n_counts / exposure
+    @assert size(sin_design_matrix) == (n_counts, n_fourier) "Sine design matrix must have size n_counts, n_fourier."
+    @assert size(fg_spectral_design_matrix) == (n_counts, n_spec) "Foreground spectral design matrix must have size n_counts, n_spec."
+    @assert size(bg_spectral_design_matrix) == (n_counts, n_spec) "Background spectral design matrix must have size n_counts, n_spec."
+    @assert size(event_segment_indices) == (n_counts,) "Event segment indices must have size n_counts."
+    @assert size(fg_exposure) == (n_spec,) "Foreground exposure must have size n_spec."
 
-    mu_mu_log_bg ~ Normal(log(cts_per_second), 4)
+    total_bg_exposure = sum(bg_exposure)
+    total_fg_exposure = sum(fg_exposure)
+
+    est_bg_rate = n_counts / total_bg_exposure
+    est_fg_rate = n_counts / total_fg_exposure
+
+    mu_mu_log_bg ~ Normal(log(est_bg_rate), 4)
     sigma_mu_log_bg ~ Exponential(2)
 
-    mu_log_fg_const ~ Normal(log(cts_per_second_per_cm2), 4)
+    mu_log_fg_const ~ Normal(log(est_fg_rate), 4)
     sigma_log_fg_const ~ Exponential(2)
 
-    mu_log_bg_uncentered = Vector{Float64}(undef, n_eg_bin)
-    mu_log_bg = Vector{Float64}(undef, n_eg_bin)
-    for i in eachindex(mu_log_bg)
-        mu_log_bg_uncentered[i] ~ Normal(0, 1)
-        mu_log_bg[i] := mu_mu_log_bg + sigma_mu_log_bg * mu_log_bg_uncentered[i]
-    end
+    mu_log_bg_uncentered ~ filldist(Normal(0,1), n_spec)
+    mu_log_bg := mu_mu_log_bg .+ sigma_mu_log_bg .* mu_log_bg_uncentered
     
-    sigma_log_bg = Vector{Float64}(undef, n_eg_bin)
-    for i in eachindex(sigma_log_bg)
-        sigma_log_bg[i] ~ Exponential(1)
-    end
+    sigma_log_bg ~ filldist(Exponential(1), n_spec)
 
-    corr_chol ~ LKJCholesky(n_eg_bin, 2.0)
+    corr_chol ~ LKJCholesky(n_spec, 2.0)
     L_cov := Diagonal(sigma_log_bg) * corr_chol.L
     cov_log_bg := L_cov * L_cov'
 
-    log_fg_coeff_const_uncentered = Vector{Float64}(undef, n_eg_bin)
-    log_fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
-    fg_coeff_const = Vector{Float64}(undef, n_eg_bin)
-    for i in eachindex(fg_coeff_const)
-        log_fg_coeff_const_uncentered[i] ~ Normal(0, 1)
-        log_fg_coeff_const[i] := mu_log_fg_const + sigma_log_fg_const * log_fg_coeff_const_uncentered[i]
-        fg_coeff_const[i] := exp(log_fg_coeff_const[i])
-    end
+    log_fg_coeff_const_uncentered ~ filldist(Normal(0,1), n_spec)
+    log_fg_coeff_const := mu_log_fg_const .+ sigma_log_fg_const .* log_fg_coeff_const_uncentered
+    fg_coeff_const := exp.(log_fg_coeff_const)
     
-    log_bg_uncentered = Matrix{Float64}(undef, n_eg_bin, n_seg)
-    log_bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
-    bg = Matrix{Float64}(undef, n_eg_bin, n_seg)
-    for j in axes(log_bg_uncentered, 2)
-        for i in axes(log_bg_uncentered, 1)
-            log_bg_uncentered[i, j] ~ Normal(0, 1)
-        end
-        lbg_j = mu_log_bg .+ (L_cov * log_bg_uncentered[:, j])
-        for i in axes(log_bg, 1)
-            log_bg[i, j] := lbg_j[i]
-            bg[i, j] := exp(log_bg[i, j])
-        end
-    end
+    log_bg_uncentered ~ filldist(Normal(0,1), n_spec, n_seg)
+    log_bg := mu_log_bg .+ (L_cov * log_bg_uncentered)
+    bg := exp.(log_bg)
 
     dsigma_fg ~ Exponential(1)
-    sigma_fg := fractional_variability * cts_per_second_per_cm2 * dsigma_fg
+    sigma_fg := fractional_variability * est_fg_rate * dsigma_fg
 
-    dfg_coeffs_cos = Matrix{Float64}(undef, n_eg_bin, n_fourier)
-    dfg_coeffs_sin = Matrix{Float64}(undef, n_eg_bin, n_fourier)
-    fg_coeffs_cos = Matrix{Float64}(undef, n_eg_bin, n_fourier)
-    fg_coeffs_sin = Matrix{Float64}(undef, n_eg_bin, n_fourier)
-    for i in 1:n_eg_bin
-        for j in 1:n_fourier
-            dfg_coeffs_cos[i, j] ~ Normal(0, 1)
-            dfg_coeffs_sin[i, j] ~ Normal(0, 1)
+    dfg_coeffs_cos ~ filldist(Normal(0,1), n_spec, n_fourier)
+    dfg_coeffs_sin ~ filldist(Normal(0,1), n_spec, n_fourier)
+    fg_coeffs_cos := sigma_fg .* dfg_coeffs_cos
+    fg_coeffs_sin := sigma_fg .* dfg_coeffs_sin
 
-            fg_coeffs_cos[i,j] := sigma_fg * dfg_coeffs_cos[i,j]
-            fg_coeffs_sin[i,j] := sigma_fg * dfg_coeffs_sin[i,j]
-        end
+    const_fg = fg_spectral_design_matrix * fg_coeff_const
+    cos_fg = (fg_spectral_design_matrix * fg_coeffs_cos) .* cos_design_matrix
+    sin_fg = (fg_spectral_design_matrix * fg_coeffs_sin) .* sin_design_matrix
+
+    fg_rate = const_fg .+ sum(cos_fg, dims=2) .+ sum(sin_fg, dims=2)
+    bg_rate = sum(bg_spectral_design_matrix .* bg[:, event_segment_indices]', dims=2)
+    rate = fg_rate .+ bg_rate
+
+    if any(rate .<= 0)
+        Turing.@addlogprob! -Inf
+    else
+        Turing.@addlogprob! sum(log.(rate))
     end
 
-    for i in eachindex(event_spectral_indices)
-        rate = fg_coeff_const[event_spectral_indices[i]]
-        for k in 1:n_fourier
-            rate += cos_design_matrix[i, k] * fg_coeffs_cos[event_spectral_indices[i], k] + sin_design_matrix[i, k] * fg_coeffs_sin[event_spectral_indices[i], k]
-        end
-        rate *= energy_bin_areas[event_spectral_indices[i], event_segment_indices[i]]
+    bg_exp_cts = sum(bg .* bg_exposure)
+    fg_exp_cts = dot(fg_coeff_const, fg_exposure)
 
-        rate += bg[event_spectral_indices[i], event_segment_indices[i]]
-
-        if rate <= 0 # Mathematical error if rate <= 0 because of log(...).  Really should ensure *foreground* rate is positive, but that can cause issues with sampling.
-            # Cannot have negative rate!
-            Turing.@addlogprob! -Inf
-        else
-            Turing.@addlogprob! log(rate)
-        end
-    end
-
-    for i in eachindex(segment_Ts)
-        for j in axes(bg, 1)
-            Turing.@addlogprob! -bg[j,i] * segment_Ts[i] # BG counts from segment i and energy bin j.
-        end
-    end
-
-    for j in eachindex(segment_Ts)
-        for i in axes(energy_bin_areas, 1)
-            Turing.@addlogprob! -fg_coeff_const[i] * segment_Ts[j] * energy_bin_areas[i,j]
-        end
-    end
+    Turing.@addlogprob! -bg_exp_cts - fg_exp_cts
 end
 
 """

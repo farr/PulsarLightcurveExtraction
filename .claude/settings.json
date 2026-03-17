@@ -14,7 +14,23 @@
       "Bash(gh api:*)",
       "Bash(curl -s \"https://api.github.com/repos/arviz-devs/InferenceObjects.jl/contents/src\")",
       "Bash(python3 -c \"import sys,json; [print\\(f[''''name'''']\\) for f in json.load\\(sys.stdin\\)]\")",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:heasarc.gsfc.nasa.gov)",
+      "WebFetch(domain:xpsi-group.github.io)",
+      "WebFetch(domain:ndspec.readthedocs.io)",
+      "WebFetch(domain:ar5iv.labs.arxiv.org)",
+      "WebFetch(domain:jmichaelburgess.com)",
+      "WebFetch(domain:pyxsis.readthedocs.io)",
+      "WebFetch(domain:cxc.cfa.harvard.edu)",
+      "WebFetch(domain:sherpa.readthedocs.io)",
+      "WebFetch(domain:iachec.org)",
+      "WebFetch(domain:www.cosmos.esa.int)",
+      "WebFetch(domain:hal.science)",
+      "WebFetch(domain:arxiv.org)",
+      "Bash(curl -s \"https://heasarc.gsfc.nasa.gov/FTP/caldb/data/nicer/xti/cpf/rmf/nixtiref20170601v003.rmf\" -o /tmp/nicer_rmf.fits)",
+      "Bash(python3 -c \"import astropy; print\\(astropy.__version__\\)\")",
+      "Bash(julia -e \"using FITSIO; println\\(\"\"FITSIO available\"\"\\)\")",
+      "Bash(fitsheader /tmp/nicer_rmf.fits)"
     ]
   }
 }
