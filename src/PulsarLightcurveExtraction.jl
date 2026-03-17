@@ -337,21 +337,18 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
 
     mu_log_bg = Vector{Float64}(undef, n_spec)
     @inbounds for i in 1:n_spec
-        mu_log_bg[i] ~ Normal(log(est_bg_rate), 4)
+        mu_log_bg[i] ~ Normal(log(est_bg_rate), 4.0)
     end
     
     sigma_log_bg = Vector{Float64}(undef, n_spec)
     @inbounds for i in 1:n_spec
-        sigma_log_bg[i] ~ Exponential(1)
+        sigma_log_bg[i] ~ Exponential(1.0)
     end
-    chol_corr_log_bg ~ LKJCholesky(n_spec, 2.0)
-    chol_cov_log_bg := Diagonal(sigma_log_bg) * chol_corr_log_bg.L
-    cov_log_bg := chol_cov_log_bg * chol_cov_log_bg'
 
     log_fg_coeff_const = Vector{Float64}(undef, n_spec)
     fg_coeff_const = Vector{Float64}(undef, n_spec)
     @inbounds for i in 1:n_spec
-        log_fg_coeff_const[i] ~ Normal(log(est_fg_rate), 4)
+        log_fg_coeff_const[i] ~ Normal(log(est_fg_rate), 4.0)
         fg_coeff_const[i] := exp(log_fg_coeff_const[i])
     end
     
@@ -360,18 +357,13 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     bg = Matrix{Float64}(undef, n_spec, n_seg)
     @inbounds for j in 1:n_seg
         @inbounds for i in 1:n_spec
-            log_bg_uncentered[i, j] ~ Normal(0, 1)
-        end
-    end
-    dmu_log_bg = chol_cov_log_bg * log_bg_uncentered
-    @inbounds for j in 1:n_seg
-        @inbounds for i in 1:n_spec
-            log_bg[i,j] := mu_log_bg[i] + dmu_log_bg[i, j]
+            log_bg_uncentered[i, j] ~ Normal(0.0, 1.0)
+            log_bg[i,j] := mu_log_bg[i] + sigma_log_bg[i] * log_bg_uncentered[i,j]
             bg[i,j] := exp(log_bg[i, j])
         end
     end
 
-    dsigma_fg ~ Exponential(1)
+    dsigma_fg ~ Exponential(1.0)
     sigma_fg := fractional_variability * est_fg_rate * dsigma_fg
 
     dfg_coeffs_cos = Matrix{Float64}(undef, n_spec, n_fourier)
@@ -380,8 +372,8 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     fg_coeffs_sin = Matrix{Float64}(undef, n_spec, n_fourier)
     @inbounds for j in 1:n_fourier
         @inbounds for i in 1:n_spec
-            dfg_coeffs_cos[i, j] ~ Normal(0, 1)
-            dfg_coeffs_sin[i, j] ~ Normal(0, 1)
+            dfg_coeffs_cos[i, j] ~ Normal(0.0, 1.0)
+            dfg_coeffs_sin[i, j] ~ Normal(0.0, 1.0)
             fg_coeffs_cos[i, j] := sigma_fg * dfg_coeffs_cos[i, j]
             fg_coeffs_sin[i, j] := sigma_fg * dfg_coeffs_sin[i, j]
         end

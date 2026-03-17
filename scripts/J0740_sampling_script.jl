@@ -170,7 +170,6 @@ trace = from_mcmcchains(chains;
         Symbol("chol_corr_log_bg.L") => (:spec, :spec),
         :chol_cov_log_bg => (:spec, :spec),
         :cov_log_bg => (:spec, :spec),
-        :log_fg_coeff_const_uncentered => (:spec,),
         :log_fg_coeff_const => (:spec,), 
         :fg_coeff_const => (:spec,), 
         :log_bg_uncentered => (:spec, :segment), 
