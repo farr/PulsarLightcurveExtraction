@@ -344,7 +344,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     @inbounds for i in 1:n_spec
         sigma_log_bg[i] ~ Exponential(1)
     end
-    chol_corr_log_bg ~ LKJCholesky(n_spec, 2)
+    chol_corr_log_bg ~ LKJCholesky(n_spec, 2.0)
     chol_cov_log_bg := Diagonal(sigma_log_bg) * chol_corr_log_bg.L
     cov_log_bg := chol_cov_log_bg * chol_cov_log_bg'
 

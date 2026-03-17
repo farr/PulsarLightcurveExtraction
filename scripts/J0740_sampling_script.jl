@@ -154,7 +154,7 @@ model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design
 println("Running with $n_chain chains using $(Threads.nthreads()) threads...")
 
 ## Sample it
-adtype = AutoMooncake() # AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
+adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 kernel = NUTS(n_mcmc, target_arate; adtype=adtype)
 if n_chain == 1
     chains = sample(model, kernel, n_mcmc)
