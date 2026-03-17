@@ -319,7 +319,7 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure; fractional_variability=0.1)
+@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
     n_counts, n_fourier = size(cos_design_matrix)
     n_spec, n_seg = size(bg_exposure)
 
@@ -341,49 +341,89 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     mu_log_fg_const ~ Normal(log(est_fg_rate), 4)
     sigma_log_fg_const ~ Exponential(2)
 
-    mu_log_bg_uncentered ~ filldist(Normal(0,1), n_spec)
-    mu_log_bg := mu_mu_log_bg .+ sigma_mu_log_bg .* mu_log_bg_uncentered
+    mu_log_bg_uncentered = Vector{Float64}(undef, n_spec)
+    mu_log_bg = Vector{Float64}(undef, n_spec)
+    @inbounds for i in 1:n_spec
+        mu_log_bg_uncentered[i] ~ Normal(0, 1)
+        mu_log_bg[i] := mu_mu_log_bg + sigma_mu_log_bg * mu_log_bg_uncentered[i]
+    end
     
-    sigma_log_bg ~ filldist(Exponential(1), n_spec)
+    sigma_log_bg = Vector{Float64}(undef, n_spec)
+    @inbounds for i in 1:n_spec
+        sigma_log_bg[i] ~ Exponential(1)
+    end
 
     corr_chol ~ LKJCholesky(n_spec, 2.0)
     L_cov := Diagonal(sigma_log_bg) * corr_chol.L
     cov_log_bg := L_cov * L_cov'
 
-    log_fg_coeff_const_uncentered ~ filldist(Normal(0,1), n_spec)
-    log_fg_coeff_const := mu_log_fg_const .+ sigma_log_fg_const .* log_fg_coeff_const_uncentered
-    fg_coeff_const := exp.(log_fg_coeff_const)
+    log_fg_coeff_const_uncentered = Vector{Float64}(undef, n_spec)
+    log_fg_coeff_const = Vector{Float64}(undef, n_spec)
+    fg_coeff_const = Vector{Float64}(undef, n_spec)
+    @inbounds for i in 1:n_spec
+        log_fg_coeff_const_uncentered[i] ~ Normal(0, 1)
+        log_fg_coeff_const[i] := mu_log_fg_const + sigma_log_fg_const * log_fg_coeff_const_uncentered[i]
+        fg_coeff_const[i] := exp(log_fg_coeff_const[i])
+    end
     
-    log_bg_uncentered ~ filldist(Normal(0,1), n_spec, n_seg)
-    log_bg := mu_log_bg .+ (L_cov * log_bg_uncentered)
-    bg := exp.(log_bg)
+    log_bg_uncentered = Matrix{Float64}(undef, n_spec, n_seg)
+    @inbounds for j in 1:n_seg
+        @inbounds for i in 1:n_spec
+            log_bg_uncentered[i, j] ~ Normal(0, 1)
+        end
+    end
+    dlog_bg = L_cov * log_bg_uncentered
+
+    log_bg = Matrix{Float64}(undef, n_spec, n_seg)
+    bg = Matrix{Float64}(undef, n_spec, n_seg)
+    @inbounds for j in 1:n_seg
+        @inbounds for i in 1:n_spec
+            log_bg[i, j] := mu_log_bg[i] + dlog_bg[i, j]
+            bg[i, j] := exp(log_bg[i, j])
+        end
+    end
 
     dsigma_fg ~ Exponential(1)
     sigma_fg := fractional_variability * est_fg_rate * dsigma_fg
 
-    dfg_coeffs_cos ~ filldist(Normal(0,1), n_spec, n_fourier)
-    dfg_coeffs_sin ~ filldist(Normal(0,1), n_spec, n_fourier)
-    fg_coeffs_cos := sigma_fg .* dfg_coeffs_cos
-    fg_coeffs_sin := sigma_fg .* dfg_coeffs_sin
-
-    const_fg = fg_spectral_design_matrix * fg_coeff_const
-    cos_fg = (fg_spectral_design_matrix * fg_coeffs_cos) .* cos_design_matrix
-    sin_fg = (fg_spectral_design_matrix * fg_coeffs_sin) .* sin_design_matrix
-
-    fg_rate = const_fg .+ sum(cos_fg, dims=2) .+ sum(sin_fg, dims=2)
-    bg_rate = sum(bg_spectral_design_matrix .* bg[:, event_segment_indices]', dims=2)
-    rate = fg_rate .+ bg_rate
-
-    if any(rate .<= 0)
-        Turing.@addlogprob! -Inf
-    else
-        Turing.@addlogprob! sum(log.(rate))
+    dfg_coeffs_cos = Matrix{Float64}(undef, n_spec, n_fourier)
+    dfg_coeffs_sin = Matrix{Float64}(undef, n_spec, n_fourier)
+    fg_coeffs_cos = Matrix{Float64}(undef, n_spec, n_fourier)
+    fg_coeffs_sin = Matrix{Float64}(undef, n_spec, n_fourier)
+    @inbounds for j in 1:n_fourier
+        @inbounds for i in 1:n_spec
+            dfg_coeffs_cos[i, j] ~ Normal(0, 1)
+            dfg_coeffs_sin[i, j] ~ Normal(0, 1)
+            fg_coeffs_cos[i, j] := sigma_fg * dfg_coeffs_cos[i, j]
+            fg_coeffs_sin[i, j] := sigma_fg * dfg_coeffs_sin[i, j]
+        end
     end
 
-    bg_exp_cts = sum(bg .* bg_exposure)
-    fg_exp_cts = dot(fg_coeff_const, fg_exposure)
+    @inbounds for i in 1:n_counts 
+        rate = dot(fg_spectral_design_matrix[i, :], fg_coeff_const)
+        @inbounds for k in 1:n_fourier
+            rate += dot(fg_spectral_design_matrix[i, :], fg_coeffs_cos[:, k]) * cos_design_matrix[i, k]
+            rate += dot(fg_spectral_design_matrix[i, :], fg_coeffs_sin[:, k]) * sin_design_matrix[i, k]
+        end
+        rate += dot(bg_spectral_design_matrix[i, :], bg[:, event_segment_indices[i]])
 
-    Turing.@addlogprob! -bg_exp_cts - fg_exp_cts
+        if rate <= 0
+            Turing.@addlogprob! -Inf
+            break
+        else
+            Turing.@addlogprob! log(rate)
+        end
+    end
+
+    ex_cts = zero(fg_coeff_const[1])
+    @inbounds for i in 1:n_spec
+        ex_cts += fg_coeff_const[i] * fg_exposure[i]
+        @inbounds for j in 1:n_seg
+            ex_cts += bg[i, j] * bg_exposure[i, j]
+        end
+    end
+    
+    Turing.@addlogprob! -ex_cts
 end
 
 """

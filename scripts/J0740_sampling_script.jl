@@ -69,6 +69,10 @@ n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 
+# @info "Overriding parameters with hardcoded values for testing..."
+# n_segments = 10
+# n_chain = 1
+
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 
 ## Load packages
@@ -145,12 +149,18 @@ end
 fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_exposure(pi_min, pi_max, segment_start, segment_stop, arf_start, arf_stop, fg_spline_to_pi, bg_spline_to_pi)
 
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure; fractional_variability=fractional_variability)
+model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
 
 println("Running with $n_chain chains using $(Threads.nthreads()) threads...")
 
 ## Sample it
-chains = sample(model, NUTS(n_mcmc, target_arate; adtype=AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))), MCMCThreads(), n_mcmc, n_chain) # AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
+adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
+kernel = NUTS(n_mcmc, target_arate; adtype=adtype)
+if n_chain == 1
+    chains = sample(model, kernel, n_mcmc)
+else
+    chains = sample(model, kernel, MCMCThreads(), n_mcmc, n_chain)
+end
 
 ## Package it up
 trace = from_mcmcchains(chains; 
