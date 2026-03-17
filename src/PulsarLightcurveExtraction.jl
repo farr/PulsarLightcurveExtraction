@@ -335,51 +335,39 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     est_bg_rate = n_counts / total_bg_exposure
     est_fg_rate = n_counts / total_fg_exposure
 
-    mu_mu_log_bg ~ Normal(log(est_bg_rate), 4)
-    sigma_mu_log_bg ~ Exponential(2)
-
-    mu_log_fg_const ~ Normal(log(est_fg_rate), 4)
-    sigma_log_fg_const ~ Exponential(2)
-
-    mu_log_bg_uncentered = Vector{Float64}(undef, n_spec)
     mu_log_bg = Vector{Float64}(undef, n_spec)
     @inbounds for i in 1:n_spec
-        mu_log_bg_uncentered[i] ~ Normal(0, 1)
-        mu_log_bg[i] := mu_mu_log_bg + sigma_mu_log_bg * mu_log_bg_uncentered[i]
+        mu_log_bg[i] ~ Normal(log(est_bg_rate), 4)
     end
     
     sigma_log_bg = Vector{Float64}(undef, n_spec)
     @inbounds for i in 1:n_spec
         sigma_log_bg[i] ~ Exponential(1)
     end
+    chol_corr_log_bg ~ LKJCholesky(n_spec, 2)
+    chol_cov_log_bg := Diagonal(sigma_log_bg) * chol_corr_log_bg.L
+    cov_log_bg := chol_cov_log_bg * chol_cov_log_bg'
 
-    corr_chol ~ LKJCholesky(n_spec, 2.0)
-    L_cov := Diagonal(sigma_log_bg) * corr_chol.L
-    cov_log_bg := L_cov * L_cov'
-
-    log_fg_coeff_const_uncentered = Vector{Float64}(undef, n_spec)
     log_fg_coeff_const = Vector{Float64}(undef, n_spec)
     fg_coeff_const = Vector{Float64}(undef, n_spec)
     @inbounds for i in 1:n_spec
-        log_fg_coeff_const_uncentered[i] ~ Normal(0, 1)
-        log_fg_coeff_const[i] := mu_log_fg_const + sigma_log_fg_const * log_fg_coeff_const_uncentered[i]
+        log_fg_coeff_const[i] ~ Normal(log(est_fg_rate), 4)
         fg_coeff_const[i] := exp(log_fg_coeff_const[i])
     end
     
     log_bg_uncentered = Matrix{Float64}(undef, n_spec, n_seg)
+    log_bg = Matrix{Float64}(undef, n_spec, n_seg)
+    bg = Matrix{Float64}(undef, n_spec, n_seg)
     @inbounds for j in 1:n_seg
         @inbounds for i in 1:n_spec
             log_bg_uncentered[i, j] ~ Normal(0, 1)
         end
     end
-    dlog_bg = L_cov * log_bg_uncentered
-
-    log_bg = Matrix{Float64}(undef, n_spec, n_seg)
-    bg = Matrix{Float64}(undef, n_spec, n_seg)
+    dmu_log_bg = chol_cov_log_bg * log_bg_uncentered
     @inbounds for j in 1:n_seg
         @inbounds for i in 1:n_spec
-            log_bg[i, j] := mu_log_bg[i] + dlog_bg[i, j]
-            bg[i, j] := exp(log_bg[i, j])
+            log_bg[i,j] := mu_log_bg[i] + dmu_log_bg[i, j]
+            bg[i,j] := exp(log_bg[i, j])
         end
     end
 

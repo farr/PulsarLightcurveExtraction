@@ -154,7 +154,7 @@ model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design
 println("Running with $n_chain chains using $(Threads.nthreads()) threads...")
 
 ## Sample it
-adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
+adtype = AutoMooncake() # AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 kernel = NUTS(n_mcmc, target_arate; adtype=adtype)
 if n_chain == 1
     chains = sample(model, kernel, n_mcmc)
@@ -165,12 +165,11 @@ end
 ## Package it up
 trace = from_mcmcchains(chains; 
     dims=Dict(
-        :mu_log_bg_uncentered => (:spec,), 
         :mu_log_bg => (:spec, ), 
         :sigma_log_bg => (:spec,), 
-        Symbol("corr_chol.L") => (:spec, :spec2), 
-        :L_cov => (:spec, :spec2), 
-        :cov_log_bg => (:spec, :spec2), 
+        Symbol("chol_corr_log_bg.L") => (:spec, :spec),
+        :chol_cov_log_bg => (:spec, :spec),
+        :cov_log_bg => (:spec, :spec),
         :log_fg_coeff_const_uncentered => (:spec,),
         :log_fg_coeff_const => (:spec,), 
         :fg_coeff_const => (:spec,), 
