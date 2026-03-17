@@ -13,20 +13,17 @@ using Turing
 
 export logdiffexp
 export PI_TO_KEV
-export cos_sin_matrices, segment_indices
-export event_areas
-export estimate_log_bg
-export estimate_bg_spec
-export spectral_indices
+export cos_sin_matrices
+export construct_bspline_basis
+export construct_bsplane_spectral_bases
+export segment_indices
+export spectral_design_matrices
+export foreground_background_exposure
 export phase_histogram_rates
-export energy_bin_areas
 export spec_fourier_model
-export rebin_energy
 export husl_wheel
 export traceplot
 export median_and_bands
-export foreground_background_lightcurves_segment
-export flush_stderr_stdout_callback
 
 raw"""
     logdiffexp(x, y)
@@ -58,6 +55,17 @@ function cos_sin_matrices(phases, n_fourier)
 end
 
 """
+    construct_bspline_basis(e_min, e_max, n_spec, spec_order)
+
+Returns the B-spline basis object with the given energy limits, number of basis
+elements, and order.  The knots are placed logarithmically in energy.
+"""
+function construct_bspline_basis(e_min, e_max, n_spec, spec_order)
+    knots = exp.(range(log(e_min), log(e_max), length=n_spec-2))
+    return BSplineBasis(BSplineOrder(spec_order), knots)
+end
+
+"""
     construct_spline_spectral_bases(e_min, e_max, n_spec, spec_order, e_low, e_high, arf_response, rmf_response)
 
 Constructs spline bases for spectral modeling given energy bounds, number of
@@ -77,8 +85,7 @@ need not follow the optical path of the foreground photons.
 function construct_spline_spectral_bases(e_min, e_max, n_spec, spec_order, e_low, e_high, arf_response, rmf_response)
     egs = 0.5 .* (e_low .+ e_high)
     
-    knots = exp.(range(log(e_min), log(e_max), length=n_spec-2))
-    basis = BSplineBasis(BSplineOrder(spec_order), knots)
+    basis = construct_bspline_basis(e_min, e_max, n_spec, spec_order)
 
     spline_to_energy = zeros(Float32, length(egs), length(basis))
     for (i, e) in enumerate(egs)
@@ -458,49 +465,6 @@ function median_and_bands(array; q=((0.16, 0.84), (0.025, 0.975)))
         return (lower, upper)
     end
     return (m, lower_uppers)
-end
-
-"""
-    foreground_background_lightcurves_segment(trace, segment, phases, spec_bins_pi, segment_start, segment_stop, arf_start, arf_stop, arf_e_low, arf_e_high, arf_response)
-
-Given a trace of posterior samples, segment index, array of phases (spanning
-``[0,1]``), energy bin edges in PI, segment start and stop times, ARF start and
-stop times, ARF energy bin edges, and ARF response matrix, compute the
-foreground, background, and total lightcurves for the specified segment by
-marginalizing over the posterior samples.  The foreground lightcurve is computed
-by summing the constant part of the foreground and the variable part of the
-foreground (the Fourier components) across energy bins, weighted by the exposure
-for each energy bin.  The background lightcurve is computed as a constant across
-phase (since the model assumes a constant background rate in each segment) by
-summing over energy bins weighted by the background spectrum.  The total
-lightcurve is the sum of the foreground and background lightcurves.
-
-The lightcurves will be in units of counts per second as a function of phase.
-
-Returns a tuple of `(fg_lc, bg_lc, total_lc)`
-"""
-function foreground_background_lightcurves_segment(trace, segment, phases, energy_bin_areas)
-    cm, sm = cos_sin_matrices(phases, size(trace.posterior.fg_coeffs_cos, :fourier))
-    cm = DimArray(cm, (:phases => phases, :fourier => 1:size(cm,2)))
-    sm = DimArray(sm, (:phases => phases, :fourier => 1:size(sm,2)))
-
-    energy_bin_areas = DimArray(vec(energy_bin_areas), dims(trace.posterior.fg_coeff_const, :energy))
-
-    variable_fg_lc = dropdims(sum(@d((cm .* trace.posterior.fg_coeffs_cos .+ sm .* trace.posterior.fg_coeffs_sin) .* energy_bin_areas), dims=(:fourier, :energy)), dims=(:fourier, :energy))
-    const_fg_lc = dropdims(sum(@d(trace.posterior.fg_coeff_const .* energy_bin_areas), dims=:energy), dims=:energy)
-    fg_lc = @d const_fg_lc .+ variable_fg_lc
-
-    # No exposures in the background
-    bg_lc = dropdims(sum(@d(trace.posterior.bg[segment=At(segment)] .* DimArray(ones(length(phases)), :phases => phases)), dims=:energy), dims=:energy)
-
-    total_lc = @d fg_lc .+ bg_lc
-
-    return fg_lc, bg_lc, total_lc
-end
-
-function flush_stderr_stdout_callback(args...; kwargs...)
-    flush(stdout)
-    flush(stderr)
 end
 
 end # module PulsarLightcurveExtraction
