@@ -422,12 +422,20 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     end
 
     @inbounds for i in 1:n_counts 
-        rate = dot(fg_spectral_design_matrix[i, :], fg_coeff_const)
-        @inbounds for k in 1:n_fourier
-            rate += dot(fg_spectral_design_matrix[i, :], fg_coeffs_cos[:, k]) * cos_design_matrix[i, k]
-            rate += dot(fg_spectral_design_matrix[i, :], fg_coeffs_sin[:, k]) * sin_design_matrix[i, k]
+        rate = zero(fg_coeff_const[1])
+        @inbounds for j in 1:n_spec
+            fm = fg_spectral_design_matrix[i,j]
+            bm = bg_spectral_design_matrix[i,j]
+
+            rate += fm * fg_coeff_const[j]
+
+            @inbounds for k in 1:n_fourier
+                rate += fm * fg_coeffs_cos[j, k] * cos_design_matrix[i, k]
+                rate += fm * fg_coeffs_sin[j, k] * sin_design_matrix[i, k]
+            end
+
+            rate += bm * bg[j, event_segment_indices[i]]
         end
-        rate += dot(bg_spectral_design_matrix[i, :], bg[:, event_segment_indices[i]])
 
         if rate <= 0
             Turing.@addlogprob! -Inf

@@ -69,11 +69,8 @@ n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 
-# @info "Overriding parameters with hardcoded values for testing..."
-# n_segments = 10
-# n_chain = 1
-
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
+outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
 ## Load packages
 using ArviZ
@@ -151,11 +148,12 @@ fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_expo
 ## Set up the model
 model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
 
-println("Running with $n_chain chains using $(Threads.nthreads()) threads...")
-
-## Sample it
+## Set up the sampling
 adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 kernel = NUTS(n_mcmc, target_arate; adtype=adtype)
+
+## Sample it
+@info "Sampling with $n_chain chains using $(Threads.nthreads()) threads..."
 if n_chain == 1
     chains = sample(model, kernel, n_mcmc)
 else
@@ -189,4 +187,6 @@ trace = from_mcmcchains(chains;
 println("Minimum ESS: ", minimum(ess(trace)))
 
 ## Save the chains
-to_netcdf(trace, joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc"))
+to_netcdf(trace, outpath)
+
+maximum_a_posteriori
