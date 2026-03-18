@@ -344,6 +344,9 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     @inbounds for i in 1:n_spec
         sigma_log_bg[i] ~ Exponential(1.0)
     end
+    chol_corr_log_bg ~ LKJCholesky(n_spec, 2.0)
+    chol_cov_log_bg := Diagonal(sigma_log_bg) * chol_corr_log_bg.L
+    cov_log_bg := chol_cov_log_bg * chol_cov_log_bg'
 
     log_fg_coeff_const = Vector{Float64}(undef, n_spec)
     fg_coeff_const = Vector{Float64}(undef, n_spec)
@@ -358,7 +361,12 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     @inbounds for j in 1:n_seg
         @inbounds for i in 1:n_spec
             log_bg_uncentered[i, j] ~ Normal(0.0, 1.0)
-            log_bg[i,j] := mu_log_bg[i] + sigma_log_bg[i] * log_bg_uncentered[i,j]
+        end
+    end
+    dlog_bg = chol_cov_log_bg * log_bg_uncentered
+    @inbounds for j in 1:n_seg
+        @inbounds for i in 1:n_spec
+            log_bg[i,j] := mu_log_bg[i] + dlog_bg[i,j]
             bg[i,j] := exp(log_bg[i, j])
         end
     end
