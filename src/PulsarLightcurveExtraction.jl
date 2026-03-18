@@ -183,6 +183,40 @@ function foreground_background_exposure(pi_min, pi_max, segment_starts, segment_
 end
 
 """
+    background_maxl_and_fisher(bg_spectral_design_matrix, bg_exposure)
+
+Returns the maximum-likelihood estimate and fisher information matrix for the
+log of the background spectral parameters given the background spectral design
+matrix and the background exposure, assuming a pure-background model.
+"""
+function background_maxl_and_fisher(bg_spectral_design_matrix, bg_exposure)
+    function dlogl_dlogb(log_bg)
+        rates = bg_spectral_design_matrix * exp.(log_bg)
+        [(sum(bg_spectral_design_matrix[:, j] ./ rates) - bg_exposure[j])*exp(log_bg[j]) for j in axes(log_bg, 1)]
+    end
+
+    function dlogl_dlogb2(log_bg)
+        rates = bg_spectral_design_matrix * exp.(log_bg)
+
+        [-sum((bg_spectral_design_matrix[:,j] .* bg_spectral_design_matrix[:,k]) ./ (rates .* rates)) * exp(log_bg[j]) * exp(log_bg[k]) for j in axes(log_bg, 1), k in axes(log_bg, 1)]
+    end
+
+    log_bg_old = -Inf .* ones(size(bg_exposure, 1))
+    log_bg = log(size(bg_spectral_design_matrix, 1) / sum(bg_exposure)) .* ones(size(bg_exposure, 1))
+    iterations = 0
+    while sum(abs.(log_bg_old .- log_bg)) > 1e-3 && iterations < 100
+        println("Iteration $iterations: log_bg = $log_bg")
+        log_bg_old = log_bg
+        resid = dlogl_dlogb(log_bg)
+        fisher = -dlogl_dlogb2(log_bg) + Diagonal(1e-6 * ones(size(log_bg))) # Add a small ridge to ensure invertibility
+        log_bg = log_bg .+ fisher \ resid
+        iterations += 1
+    end
+
+    (log_bg, -dlogl_dlogb2(log_bg))
+end
+
+"""
     phase_histogram_rates(phases, exposure_time)
 
 Given photon `phases` in `[0, 1]` and total `exposure_time` (seconds), build a
