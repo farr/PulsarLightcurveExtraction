@@ -24,6 +24,7 @@ export spec_fourier_model
 export husl_wheel
 export traceplot
 export median_and_bands
+export foreground_background_lightcurves_segment
 
 raw"""
     logdiffexp(x, y)
@@ -535,6 +536,52 @@ function median_and_bands(array; q=((0.16, 0.84), (0.025, 0.975)))
         return (lower, upper)
     end
     return (m, lower_uppers)
+end
+
+"""
+    foreground_background_lightcurves_segment(trace, phases, segment_index, pi_min, pi_max, segment_starts, segment_ends, arf_starts, arf_ends, fg_spline_basis, bg_spline_basis)
+
+Returns `(fg_lightcurve, bg_lightcurve, total_lightcurve)` for the segment with
+index `segment_index` given the posterior samples in `trace`, the photon
+`phases`, the segment start and end times, the ARF start and end times, and the
+foreground and background spline bases.  The lightcurves are returned as
+DimArrays.  The `phases` argument should be a DimArray with a dimension of
+`:phase`; the returned lightcurves will have the same dimension.
+
+`fg_lightcurve` gives the foreground contribution to the lightcurve,
+`bg_lightcurve` gives the background contribution, and `total_lightcurve` gives
+the total (foreground + background) contribution.  The lightcurves are in units
+of counts per second as a function of phase.
+"""
+function foreground_background_lightcurves_segment(trace, phases, segment_index, pi_min, pi_max, segment_starts, segment_ends, arf_starts, arf_ends, fg_spline_basis, bg_spline_basis)
+    T = segment_ends[segment_index] - segment_starts[segment_index]
+    p = trace.posterior
+    
+    fg_exposure_array, bg_exposure_array = foreground_background_exposure(pi_min, pi_max, [segment_starts[segment_index]], [segment_ends[segment_index]], arf_starts, arf_ends, fg_spline_basis, bg_spline_basis)
+    bg_exposure_single = bg_exposure_array[:, 1]
+
+    # We actually don't want the *total* exposure---we want the exposure *per
+    # time* so that the lightcurve is in units of counts per second.
+    fg_exposure_array ./= T
+    bg_exposure_single ./= T
+
+    fg_exposure = DimArray(fg_exposure_array, dims(p, :spec))
+    bg_exposure = DimArray(bg_exposure_single, dims(p, :spec))
+
+    cmm, smm = cos_sin_matrices(phases, size(p, :fourier))
+    cm = DimArray(cmm, (Dim{:phase}(phases), dims(p, :fourier)))
+    sm = DimArray(smm, (Dim{:phase}(phases), dims(p, :fourier)))
+
+    fg_lightcurve_unsummed = @d fg_exposure .* (p.fg_coeff_const .+ p.fg_coeffs_cos .* cm .+ p.fg_coeffs_sin .* sm)
+    sum_dims = (:spec, :fourier)
+    fg_lightcurve = dropdims(sum(fg_lightcurve_unsummed, dims=sum_dims), dims=sum_dims)
+
+    bg_lightcurve_unsummed = @d bg_exposure .* p.bg[segment=At(segment_index)] .+ 0.0 .* cm[fourier=At(1)] # Add zero times a phase array to it has a phase dimension
+    bg_lightcurve = dropdims(sum(bg_lightcurve_unsummed, dims=:spec), dims=:spec)
+
+    total_lightcurve = @d fg_lightcurve .+ bg_lightcurve
+
+    (fg_lightcurve, bg_lightcurve, total_lightcurve)
 end
 
 end # module PulsarLightcurveExtraction
