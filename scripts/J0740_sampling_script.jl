@@ -149,7 +149,7 @@ fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_expo
 model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
 
 ## Set up the sampling
-adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
+adtype = AutoMooncake() # AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 kernel = NUTS(n_mcmc, target_arate; adtype=adtype)
 
 ## Sample it
