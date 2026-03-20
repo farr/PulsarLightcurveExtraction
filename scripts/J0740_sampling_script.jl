@@ -51,6 +51,9 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Target acceptance rate for NUTS"
             arg_type = Float64
             default = 0.8
+        "--use-mooncake"
+            help = "Whether to use Mooncake for AD (default: false, i.e. use Enzyme)"
+            action = :store_true
     end
     global parsed_args = parse_args(s)
 end
@@ -68,6 +71,10 @@ pi_max = parsed_args["pi-max"]
 n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
+
+@warn "Overriding n_segments and n_chain for REPL"
+n_segments = 10
+n_chain = 1
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
@@ -149,7 +156,13 @@ fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_expo
 model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
 
 ## Set up the sampling
-adtype = AutoMooncake() # AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
+if parsed_args["use-mooncake"]
+    @info "Using Mooncake for AD"
+    adtype = AutoMooncake()
+else
+    @info "Using Enzyme for AD"
+    adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
+end
 kernel = NUTS(n_mcmc, target_arate; adtype=adtype)
 
 ## Sample it
