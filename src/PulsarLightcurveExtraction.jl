@@ -379,9 +379,22 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     @inbounds for i in 1:n_spec
         sigma_log_bg[i] ~ Exponential(1.0)
     end
-    chol_corr_log_bg ~ LKJCholesky(n_spec, 2.0)
+
+    # In order to use Enzyme, at least on some environments, it looks like we
+    # have to do this manually instead of chol_corr_log_bg ~ LKJCholesky(n_spec,
+    # 2.0)
+    chol_corr_log_bg_raw = Vector{Float64}(undef, div(n_spec * (n_spec - 1), 2))
+    @inbounds for i in eachindex(chol_corr_log_bg_raw)
+        chol_corr_log_bg_raw[i] ~ Turing.Flat() # Other packages also export Flat, I guess?
+    end
+    d = LKJCholesky(n_spec, 2.0)
+    b = bijector(d)
+    bi = inverse(b)
+    chol_corr_log_bg = bi(chol_corr_log_bg_raw)
     chol_cov_log_bg := Diagonal(sigma_log_bg) * chol_corr_log_bg.L
     cov_log_bg := chol_cov_log_bg * chol_cov_log_bg'
+    Turing.@addlogprob! logpdf(d, chol_corr_log_bg)
+    Turing.@addlogprob! logabsdetjac(bi, chol_corr_log_bg_raw)
 
     log_fg_coeff_const = Vector{Float64}(undef, n_spec)
     fg_coeff_const = Vector{Float64}(undef, n_spec)

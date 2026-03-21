@@ -72,10 +72,6 @@ n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 
-@warn "Overriding n_segments and n_chain for REPL"
-n_segments = 10
-n_chain = 1
-
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
@@ -178,9 +174,6 @@ trace = from_mcmcchains(chains;
     dims=Dict(
         :mu_log_bg => (:spec, ), 
         :sigma_log_bg => (:spec,), 
-        Symbol("chol_corr_log_bg.L") => (:spec, :spec2),
-        :chol_cov_log_bg => (:spec, :spec2),
-        :cov_log_bg => (:spec, :spec2),
         :log_fg_coeff_const => (:spec,), 
         :fg_coeff_const => (:spec,), 
         :log_bg_uncentered => (:spec, :segment), 
