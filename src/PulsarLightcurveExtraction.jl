@@ -451,14 +451,12 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
             rate += bm * bg[j, event_segment_indices[i]]
         end
 
-        # We may, during warmup, get negative rates due to the phase-varying
-        # components of the model; these are pretty strongly ruled out by the
-        # data (which don't support tons of variability anyway), so won't be in
-        # or near the typical set of the posterior.  Nevertheless, they can
-        # happen during initialization, so we truncate the log-likelihood at
-        # some small positive value to avoid NaNs and let the sampler guide
-        # itself back to the typical set.
-        Turing.@addlogprob! log(max(rate, eps(typeof(rate))))
+        if rate <= 0
+            Turing.@addlogprob! -Inf
+            return # We're done, no need to accumulate others
+        else
+            Turing.@addlogprob! log(rate)
+        end
     end
 
     ex_cts = zero(fg_coeff_const[1])
@@ -470,6 +468,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     end
     
     Turing.@addlogprob! -ex_cts
+    return
 end
 
 """
