@@ -459,13 +459,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         end
     end
 
-    ex_cts = zero(fg_coeff_const[1])
-    @inbounds for i in 1:n_spec
-        ex_cts += fg_coeff_const[i] * fg_exposure[i]
-        @inbounds for j in 1:n_seg
-            ex_cts += bg[i, j] * bg_exposure[i, j]
-        end
-    end
+    ex_cts = dot(fg_coeff_const, fg_exposure) + dot(bg, bg_exposure)
     
     Turing.@addlogprob! -ex_cts
     return
