@@ -30,7 +30,9 @@
       "Bash(curl -s \"https://heasarc.gsfc.nasa.gov/FTP/caldb/data/nicer/xti/cpf/rmf/nixtiref20170601v003.rmf\" -o /tmp/nicer_rmf.fits)",
       "Bash(python3 -c \"import astropy; print\\(astropy.__version__\\)\")",
       "Bash(julia -e \"using FITSIO; println\\(\"\"FITSIO available\"\"\\)\")",
-      "Bash(fitsheader /tmp/nicer_rmf.fits)"
+      "Bash(fitsheader /tmp/nicer_rmf.fits)",
+      "Read(//mnt/home/wfarr/.julia/packages/Turing/**)",
+      "Read(//mnt/home/wfarr/.julia/packages/DynamicPPL/**)"
     ]
   }
 }
