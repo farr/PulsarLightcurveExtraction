@@ -76,12 +76,16 @@ trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
 ## Load packages
+using AdvancedHMC
 using ArviZ
 using DimensionalData
+using DynamicPPL
+using DynamicPPL: LogDensityFunction
 using FITSIO
 using Enzyme
 using HDF5
 using LinearAlgebra
+using LogDensityProblems
 using Mooncake
 using NCDatasets
 using PulsarLightcurveExtraction
@@ -151,7 +155,7 @@ fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_expo
 ## Set up the model
 model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
 
-## Set up the sampling
+## Set up the autodiff
 if parsed_args["use-mooncake"]
     @info "Using Mooncake for AD"
     adtype = AutoMooncake()
@@ -159,14 +163,75 @@ else
     @info "Using Enzyme for AD"
     adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 end
-kernel = NUTS(n_mcmc, target_arate; adtype=adtype)
+
+## Set up the sampling kernel, using nutpie adaptation
+# Build ldf on a linked (unconstrained) VarInfo so that any real-valued θ is valid.
+# The default LogDensityFunction(model) uses constrained space, which gives -Inf
+# for negative values of bounded parameters (scales, variances, etc.).
+ldf = LogDensityFunction(
+    model,
+    DynamicPPL.getlogjoint_internal,
+    DynamicPPL.LinkAll();
+    adtype=adtype,
+)
+D = LogDensityProblems.dimension(ldf)
+
+# Build NutpieVar-based sampler
+metric     = DiagEuclideanMetric(D)
+hamiltonian = Hamiltonian(metric, ldf)
+
+# find_good_stepsize bottoms out at ~1e-32 when the probe point has non-finite
+# log density (NaN/Inf gradient from Enzyme, or outside model support).
+# Search for a probe point with finite log density; fall back to ϵ=0.1 if none found.
+@info "Searching for valid initial guess"
+θ0 = let
+    candidate = nothing
+    for _ in 1:100
+        θ = randn(D) # For some reason, only positive values seem to give finite log density???
+        if isfinite(LogDensityProblems.logdensity(ldf, θ))
+            candidate = θ
+            break
+        end
+    end
+    candidate
+end
+ϵ0 = if θ0 !== nothing
+    find_good_stepsize(hamiltonian, θ0)
+else
+    @warn "Could not find a probe point with finite log density; using ϵ=0.1"
+    0.1
+end
+integrator = Leapfrog(ϵ0)
+
+@info "Found initial stepsize: $(ϵ0)"
+
+mma      = NutpieVar(size(metric))
+ssa      = StepSizeAdaptor(target_arate, integrator)
+adaptor  = StanHMCAdaptor(mma, ssa)
+
+kernel   = HMCKernel(
+    Trajectory{MultinomialTS}(integrator, GeneralisedNoUTurn())
+)
+
+nutpie_sampler = HMCSampler(kernel, metric, adaptor)
 
 ## Sample it
+n_warmup  = n_mcmc
+n_samples = n_mcmc
+
+ext_sampler = externalsampler(nutpie_sampler; adtype=adtype)
+if n_chain == 1
+    initial_params = DynamicPPL.InitFromUniform() # From above: negative values are not good?  WTF?
+else
+    initial_params = [DynamicPPL.InitFromUniform() for _ in 1:n_chain]
+end
+sample_kwargs = (n_adapts=n_warmup, discard_initial=n_warmup, initial_params=initial_params)
+
 @info "Sampling with $n_chain chains using $(Threads.nthreads()) threads..."
 if n_chain == 1
-    chains = sample(model, kernel, n_mcmc)
+    chains = sample(model, ext_sampler, n_warmup + n_samples; sample_kwargs...)
 else
-    chains = sample(model, kernel, MCMCThreads(), n_mcmc, n_chain)
+    chains = sample(model, ext_sampler, MCMCThreads(), n_warmup + n_samples, n_chain; sample_kwargs...)
 end
 
 ## Package it up
