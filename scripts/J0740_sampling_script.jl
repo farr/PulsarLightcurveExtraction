@@ -261,5 +261,3 @@ println("Minimum ESS: ", minimum(ess(trace)))
 
 ## Save the chains
 to_netcdf(trace, outpath)
-
-maximum_a_posteriori
