@@ -580,9 +580,8 @@ function foreground_background_lightcurves_segment(trace, phases, segment_index,
     cm = DimArray(cmm, (Dim{:phase}(phases), dims(p, :fourier)))
     sm = DimArray(smm, (Dim{:phase}(phases), dims(p, :fourier)))
 
-    fg_lightcurve_unsummed = @d fg_exposure .* (p.fg_coeff_const .+ p.fg_coeffs_cos .* cm .+ p.fg_coeffs_sin .* sm)
-    sum_dims = (:spec, :fourier)
-    fg_lightcurve = dropdims(sum(fg_lightcurve_unsummed, dims=sum_dims), dims=sum_dims)
+    fg_lightcurve_variable = dropdims(sum(@d(p.fg_coeffs_cos .* cm .+ p.fg_coeffs_sin .* sm), dims=:fourier), dims=:fourier)
+    fg_lightcurve = dropdims(sum(@d(fg_exposure .* (p.fg_coeff_const .+ fg_lightcurve_variable)), dims=:spec), dims=:spec)
 
     bg_lightcurve_unsummed = @d bg_exposure .* p.bg[segment=At(segment_index)] .+ 0.0 .* cm[fourier=At(1)] # Add zero times a phase array to it has a phase dimension
     bg_lightcurve = dropdims(sum(bg_lightcurve_unsummed, dims=:spec), dims=:spec)
