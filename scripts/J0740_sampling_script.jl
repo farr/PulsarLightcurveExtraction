@@ -51,6 +51,18 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Target acceptance rate for NUTS"
             arg_type = Float64
             default = 0.8
+        "--init-buffer"
+            help = "Initial, fixed-mass-matrix buffer for step-size adaptation (default: 25)"
+            arg_type = Int
+            default = 25
+        "--term-buffer"
+            help = "Final, fixed-mass-matrix buffer for step-size adaptation (default: 25)"
+            arg_type = Int
+            default = 25
+        "--window-size"
+            help = "First mass-matrix-adaptation window size (default: 25)"
+            arg_type = Int
+            default = 25
         "--use-mooncake"
             help = "Whether to use Mooncake for AD (default: false, i.e. use Enzyme)"
             action = :store_true
@@ -71,6 +83,9 @@ pi_max = parsed_args["pi-max"]
 n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
+init_buffer = parsed_args["init-buffer"]
+term_buffer = parsed_args["term-buffer"]
+window_size = parsed_args["window-size"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
@@ -207,7 +222,7 @@ integrator = Leapfrog(ϵ0)
 
 mma      = NutpieVar(size(metric))
 ssa      = StepSizeAdaptor(target_arate, integrator)
-adaptor  = StanHMCAdaptor(mma, ssa)
+adaptor  = StanHMCAdaptor(mma, ssa, init_buffer=init_buffer, term_buffer=term_buffer, window_size=window_size)
 
 kernel   = HMCKernel(
     Trajectory{MultinomialTS}(integrator, GeneralisedNoUTurn())
