@@ -72,6 +72,11 @@ n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 
+@warn "Overriding command-line arguments for testing purposes..."
+n_mcmc = 200
+n_segments = 10
+n_chain = 1
+
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
@@ -166,10 +171,14 @@ end
 
 ## Sample it
 kernel = Turing.NUTS(n_mcmc, target_arate; adtype=adtype)
+
+@info "Seeking MAP point for initialization..."
+popt = maximum_a_posteriori(model; adtype=adtype, initial_params=InitFromUniform())
+
 if n_chain == 1
-    initial_params = DynamicPPL.InitFromUniform()
+    initial_params = InitFromParams(popt)
 else
-    initial_params = [DynamicPPL.InitFromUniform() for _ in 1:n_chain]
+    initial_params = [InitFromParams(popt) for _ in 1:n_chain]
 end
 sample_kwargs = (initial_params=initial_params, )
 
