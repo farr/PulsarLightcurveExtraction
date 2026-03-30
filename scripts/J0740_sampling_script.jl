@@ -72,11 +72,6 @@ n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 
-@warn "Overriding command-line arguments for testing purposes..."
-n_mcmc = 200
-n_segments = 10
-n_chain = 1
-
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
@@ -95,6 +90,20 @@ using Mooncake
 using NCDatasets
 using PulsarLightcurveExtraction
 using Turing
+
+# Override Turing's AHMCAdaptor to use a shorter init_buffer (5 vs default 75).
+# Since we initialize at the MAP, we need very little pure step-size tuning before
+# mass matrix adaptation begins.
+import Turing.Inference: AHMCAdaptor
+function AHMCAdaptor(alg::Turing.NUTS, metric::AdvancedHMC.AbstractMetric, nadapts::Int; ϵ=alg.ϵ)
+    pc = AdvancedHMC.MassMatrixAdaptor(metric)
+    da = AdvancedHMC.StepSizeAdaptor(alg.δ, ϵ)
+    iszero(alg.n_adapts) && return AdvancedHMC.Adaptation.NoAdaptation()
+    metric == AdvancedHMC.UnitEuclideanMetric && return AdvancedHMC.NaiveHMCAdaptor(pc, da)
+    adaptor = AdvancedHMC.StanHMCAdaptor(pc, da; init_buffer=5)
+    AdvancedHMC.initialize!(adaptor, nadapts)
+    return adaptor
+end
 
 # Otherwise the sampler will try to use multiple threads for linear algebra, alas!
 BLAS.set_num_threads(1)
