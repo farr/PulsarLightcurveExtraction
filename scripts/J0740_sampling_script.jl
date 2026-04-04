@@ -91,16 +91,17 @@ using NCDatasets
 using PulsarLightcurveExtraction
 using Turing
 
-# Override Turing's AHMCAdaptor to use a shorter init_buffer (5 vs default 75).
-# Since we initialize at the MAP, we need very little pure step-size tuning before
-# mass matrix adaptation begins.
+# Override Turing's AHMCAdaptor to use a shorter init_buffer (5 vs default 75),
+# as well as shorter term_buffer (25 vs default 50) and window_size (10 vs
+# default 25). Since we initialize at the MAP, we need very little pure
+# step-size tuning before mass matrix adaptation begins.
 import Turing.Inference: AHMCAdaptor
 function AHMCAdaptor(alg::Turing.NUTS, metric::AdvancedHMC.AbstractMetric, nadapts::Int; ϵ=alg.ϵ)
     pc = AdvancedHMC.MassMatrixAdaptor(metric)
     da = AdvancedHMC.StepSizeAdaptor(alg.δ, ϵ)
     iszero(alg.n_adapts) && return AdvancedHMC.Adaptation.NoAdaptation()
     metric == AdvancedHMC.UnitEuclideanMetric && return AdvancedHMC.NaiveHMCAdaptor(pc, da)
-    adaptor = AdvancedHMC.StanHMCAdaptor(pc, da; init_buffer=5)
+    adaptor = AdvancedHMC.StanHMCAdaptor(pc, da; init_buffer=5, term_buffer=25, window_size=10)
     AdvancedHMC.initialize!(adaptor, nadapts)
     return adaptor
 end
