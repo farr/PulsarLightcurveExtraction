@@ -2,4 +2,4 @@
 
 set -e
 
-rsync -e ssh -avz --progress sfgateway:/mnt/home/wfarr/PulsarLightcurveExtraction/data/ ../data/
+rsync -e ssh -avz --progress rusty:/mnt/home/wfarr/PulsarLightcurveExtraction/data/ ../data/
