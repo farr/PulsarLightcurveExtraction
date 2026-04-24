@@ -51,6 +51,10 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Target acceptance rate for NUTS"
             arg_type = Float64
             default = 0.8
+        "--max-depth"
+            help = "Maximum tree depth for NUTS"
+            arg_type = Int
+            default = 7
         "--use-mooncake"
             help = "Whether to use Mooncake for AD (default: false, i.e. use Enzyme)"
             action = :store_true
@@ -71,12 +75,12 @@ pi_max = parsed_args["pi-max"]
 n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
+max_depth = parsed_args["max-depth"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
 ## Load packages
-using AdvancedHMC
 using ArviZ
 using DimensionalData
 using DynamicPPL
@@ -91,19 +95,11 @@ using NCDatasets
 using PulsarLightcurveExtraction
 using Turing
 
-# Override Turing's AHMCAdaptor to use a shorter init_buffer (5 vs default 75),
-# as well as shorter term_buffer (25 vs default 50) and window_size (10 vs
-# default 25). Since we initialize at the MAP, we need very little pure
-# step-size tuning before mass matrix adaptation begins.
-import Turing.Inference: AHMCAdaptor
-function AHMCAdaptor(alg::Turing.NUTS, metric::AdvancedHMC.AbstractMetric, nadapts::Int; ϵ=alg.ϵ)
-    pc = AdvancedHMC.MassMatrixAdaptor(metric)
-    da = AdvancedHMC.StepSizeAdaptor(alg.δ, ϵ)
-    iszero(alg.n_adapts) && return AdvancedHMC.Adaptation.NoAdaptation()
-    metric == AdvancedHMC.UnitEuclideanMetric && return AdvancedHMC.NaiveHMCAdaptor(pc, da)
-    adaptor = AdvancedHMC.StanHMCAdaptor(pc, da; init_buffer=5, term_buffer=25, window_size=10)
-    AdvancedHMC.initialize!(adaptor, nadapts)
-    return adaptor
+# Periodically flush stdout/stderr so @info, @progress, etc. appear promptly
+# when running non-interactively under SLURM.
+const _flush_timer = Timer(0; interval=1.0) do _
+    flush(stdout)
+    flush(stderr)
 end
 
 # Otherwise the sampler will try to use multiple threads for linear algebra, alas!
@@ -180,7 +176,7 @@ else
 end
 
 ## Sample it
-kernel = Turing.NUTS(n_mcmc, target_arate; adtype=adtype)
+kernel = Turing.NUTS(n_mcmc, target_arate; adtype=adtype, max_depth=max_depth)
 
 @info "Seeking MAP point for initialization..."
 popt = maximum_a_posteriori(model; adtype=adtype, initial_params=InitFromUniform())
@@ -190,13 +186,12 @@ if n_chain == 1
 else
     initial_params = [InitFromParams(popt) for _ in 1:n_chain]
 end
-sample_kwargs = (initial_params=initial_params, )
 
-@info "Sampling with $n_chain chains using $(Threads.nthreads()) threads..."
+@info "Sampling with $n_segments segments of data with $n_chain chains using $(Threads.nthreads()) threads..."
 if n_chain == 1
-    chains = sample(model, kernel, n_mcmc; sample_kwargs...)
+    chains = sample(model, kernel, n_mcmc; initial_params=initial_params)
 else
-    chains = sample(model, kernel, MCMCThreads(), n_mcmc, n_chain; sample_kwargs...)
+    chains = sample(model, kernel, MCMCThreads(), n_mcmc, n_chain; initial_params=initial_params)
 end
 
 ## Package it up
