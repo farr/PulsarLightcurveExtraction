@@ -54,7 +54,7 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
         "--max-depth"
             help = "Maximum tree depth for NUTS"
             arg_type = Int
-            default = 7
+            default = 10
         "--use-mooncake"
             help = "Whether to use Mooncake for AD (default: false, i.e. use Enzyme)"
             action = :store_true
@@ -76,11 +76,14 @@ n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 max_depth = parsed_args["max-depth"]
+use_mooncake = parsed_args["use-mooncake"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
 ## Load packages
+using AbstractMCMC
+using AdvancedHMC
 using ArviZ
 using DimensionalData
 using DynamicPPL
@@ -92,6 +95,7 @@ using LinearAlgebra
 using LogDensityProblems
 using Mooncake
 using NCDatasets
+using Pathfinder
 using PulsarLightcurveExtraction
 using Turing
 
@@ -167,7 +171,7 @@ fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_expo
 model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
 
 ## Set up the autodiff
-if parsed_args["use-mooncake"]
+if use_mooncake
     @info "Using Mooncake for AD"
     adtype = AutoMooncake()
 else
@@ -175,23 +179,34 @@ else
     adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 end
 
-## Sample it
-kernel = Turing.NUTS(n_mcmc, target_arate; adtype=adtype, max_depth=max_depth)
+## Pathfinder
+pf_result = pathfinder(model; ndraws=n_mcmc, adtype=adtype)
 
-@info "Seeking MAP point for initialization..."
-popt = maximum_a_posteriori(model; adtype=adtype, initial_params=InitFromUniform())
+## Set up external sampler
+inv_metric = diag(pf_result.fit_distribution.Σ)
+metric = AdvancedHMC.DiagEuclideanMetric(inv_metric)
 
-if n_chain == 1
-    initial_params = InitFromParams(popt)
+## NUTS sampler with Stan windowed mass-matrix + step-size adaptation.
+## Uses the high-level NUTS constructor so that the auto-detected step size is correctly
+## threaded through make_integrator → make_kernel → make_adaptor (HMCSampler bypasses this).
+hmc_sampler = AdvancedHMC.NUTS(target_arate; max_depth=max_depth, metric=metric)
+kernel = externalsampler(hmc_sampler; adtype=adtype)
+
+## Set up the initialization
+@info "Drawing $n_chain initialization points from Pathfinder distribution..."
+pf_samples = AbstractMCMC.to_samples(DynamicPPL.ParamsWithStats, pf_result.draws_transformed, model)
+initial_params = if n_chain == 1
+    InitFromParams(pf_samples[1].params)
 else
-    initial_params = [InitFromParams(popt) for _ in 1:n_chain]
+    [InitFromParams(pf_samples[i].params) for i in 1:n_chain]
 end
 
+## Sample it
 @info "Sampling with $n_segments segments of data with $n_chain chains using $(Threads.nthreads()) threads..."
 if n_chain == 1
-    chains = sample(model, kernel, n_mcmc; initial_params=initial_params)
+    chains = sample(model, kernel, n_mcmc; n_adapts=n_mcmc, discard_initial=n_mcmc, initial_params=initial_params)
 else
-    chains = sample(model, kernel, MCMCThreads(), n_mcmc, n_chain; initial_params=initial_params)
+    chains = sample(model, kernel, MCMCThreads(), n_mcmc, n_chain; n_adapts=n_mcmc, discard_initial=n_mcmc, initial_params=initial_params)
 end
 
 ## Package it up

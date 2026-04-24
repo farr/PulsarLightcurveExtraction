@@ -452,8 +452,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         end
 
         if rate <= 0
-            Turing.@addlogprob! -Inf
-            return # We're done, no need to accumulate others
+            Turing.@addlogprob! -1000 # Painful
         else
             Turing.@addlogprob! log(rate)
         end
