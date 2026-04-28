@@ -26,17 +26,17 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
         "--e-max"
             help = "Maximum energy (keV)"
             arg_type = Float64
-            default = 3.5
+            default = 3.1
         "--spec-order"
             help = "Order of the splines in the spectral model (default: 4, i.e. cubic splines, with continuous second derivatives)"
             arg_type = Int
             default = 4
         "--pi-min"
-            help = "Minimum PI to use (default: 25, i.e. 0.25 keV)"
+            help = "Minimum PI to use (default: 25, i.e. ~0.25 keV)"
             arg_type = Int
             default = 25
         "--pi-max"
-            help = "Maximum PI to use (default: 300, i.e. 3.0 keV)"
+            help = "Maximum PI to use (default: 300, i.e. ~3.0 keV)"
             arg_type = Int
             default = 300
         "--n-chain"
@@ -168,7 +168,8 @@ end
 fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_exposure(pi_min, pi_max, segment_start, segment_stop, arf_start, arf_stop, fg_spline_to_pi, bg_spline_to_pi)
 
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
+rate_threshold = PulsarLightcurveExtraction.rate_threshold_from_segments(segment_start, segment_stop, pi_min, pi_max, event_segment_indices)
+model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability, rate_threshold)
 
 ## Set up the autodiff
 if use_mooncake
@@ -196,9 +197,9 @@ kernel = externalsampler(hmc_sampler; adtype=adtype)
 @info "Drawing $n_chain initialization points from Pathfinder distribution..."
 pf_samples = AbstractMCMC.to_samples(DynamicPPL.ParamsWithStats, pf_result.draws_transformed, model)
 initial_params = if n_chain == 1
-    InitFromParams(pf_samples[1].params)
+    InitFromParams(pf_samples[1].params, InitFromUniform())
 else
-    [InitFromParams(pf_samples[i].params) for i in 1:n_chain]
+    [InitFromParams(pf_samples[i].params, InitFromUniform()) for i in 1:n_chain]
 end
 
 ## Sample it
@@ -210,26 +211,23 @@ else
 end
 
 ## Package it up
-trace = from_mcmcchains(chains; 
+trace = from_mcmcchains(chains;
     dims=Dict(
-        :mu_log_bg => (:spec, ), 
-        :sigma_log_bg => (:spec,), 
-        :chol_cov_log_bg => (:spec, :spec2),
-        :cov_log_bg => (:spec, :spec2),
-        :log_fg_coeff_const => (:spec,), 
-        :fg_coeff_const => (:spec,), 
-        :log_bg_uncentered => (:spec, :segment), 
-        :log_bg => (:spec, :segment), 
-        :bg => (:spec, :segment), 
-        :dfg_coeffs_cos => (:spec, :fourier), 
-        :dfg_coeffs_sin => (:spec, :fourier), 
-        :fg_coeffs_cos => (:spec, :fourier), 
-        :fg_coeffs_sin => (:spec, :fourier)), 
+        :log_mu_bg => (:spec,),
+        :mu_bg => (:spec,),
+        :sigma_log_bg => (:spec,),
+        :log_fg_coeff_const => (:spec,),
+        :fg_coeff_const => (:spec,),
+        :log_bg => (:spec, :segment),
+        :bg => (:spec, :segment),
+        :dfg_coeffs_cos => (:spec, :fourier),
+        :dfg_coeffs_sin => (:spec, :fourier),
+        :fg_coeffs_cos => (:spec, :fourier),
+        :fg_coeffs_sin => (:spec, :fourier)),
     coords=Dict(
-        :fourier => 1:n_fourier, 
-        :segment => 1:n_segments, 
-        :spec => 1:n_spec, 
-        :spec2 => 1:n_spec))
+        :fourier => 1:n_fourier,
+        :segment => 1:n_segments,
+        :spec => 1:n_spec))
 
 ## Check minimum ESS:
 println("Minimum ESS: ", minimum(ess(trace)))
