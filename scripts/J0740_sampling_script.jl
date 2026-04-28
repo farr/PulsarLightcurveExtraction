@@ -213,7 +213,7 @@ end
 ## Package it up
 trace = from_mcmcchains(chains;
     dims=Dict(
-        :log_mu_bg => (:spec,),
+        :mu_log_bg => (:spec,),
         :mu_bg => (:spec,),
         :sigma_log_bg => (:spec,),
         :log_fg_coeff_const => (:spec,),
