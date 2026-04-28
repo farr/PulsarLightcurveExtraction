@@ -445,11 +445,11 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     est_bg_rate = n_counts / total_bg_exposure
     est_fg_rate = n_counts / total_fg_exposure
 
-    log_mu_bg = Vector{Float64}(undef, n_spec)
+    mu_log_bg = Vector{Float64}(undef, n_spec)
     mu_bg = Vector{Float64}(undef, n_spec)
     @inbounds for i in 1:n_spec
-        log_mu_bg[i] ~ Normal(log(est_bg_rate), 2.0)
-        mu_bg[i] := exp(log_mu_bg[i])
+        mu_log_bg[i] ~ Normal(log(est_bg_rate), 2.0)
+        mu_bg[i] := exp(mu_log_bg[i])
     end
 
     sigma_log_bg = Vector{Float64}(undef, n_spec)
@@ -468,7 +468,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     bg = Matrix{Float64}(undef, n_spec, n_seg)
     @inbounds for j in 1:n_seg
         @inbounds for i in 1:n_spec
-            log_bg[i, j] ~ Normal(log_mu_bg[i], sigma_log_bg[i])
+            log_bg[i, j] ~ Normal(mu_log_bg[i], sigma_log_bg[i])
             bg[i,j] := exp(log_bg[i,j])
         end
     end
