@@ -78,10 +78,6 @@ target_arate = parsed_args["target-arate"]
 max_depth = parsed_args["max-depth"]
 use_mooncake = parsed_args["use-mooncake"]
 
-@warn "Overriding command line arguments for testing purposes..."
-n_chain = 1
-n_segments = 10
-
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 

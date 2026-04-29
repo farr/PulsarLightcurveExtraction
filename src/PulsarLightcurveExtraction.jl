@@ -560,9 +560,8 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
             return -Inf
         end
     end
+    log_rates = log.(rates)
 
-    log_rates = rates # Aliasing, rates is destroyed by this procedure
-    log_rates .= log.(rates) # Take the log
     Turing.@addlogprob! sum(log_rates)
 
     ex_cts = dot(fg_coeff_const, fg_exposure) + dot(bg, bg_exposure)

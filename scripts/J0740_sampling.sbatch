@@ -8,4 +8,4 @@
 
 mkdir -p logs
 
-julia --gcthreads 1 --project=. scripts/J0740_sampling_script.jl "$@"
+julia --project=. scripts/J0740_sampling_script.jl "$@"
