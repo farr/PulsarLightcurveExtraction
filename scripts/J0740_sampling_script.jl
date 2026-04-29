@@ -81,34 +81,41 @@ use_mooncake = parsed_args["use-mooncake"]
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
-## Load packages
-using AbstractMCMC
-using AdvancedHMC
-using ArviZ
-using DimensionalData
-using DynamicPPL
-using DynamicPPL: LogDensityFunction
-using FITSIO
-using Enzyme
-using HDF5
-using LinearAlgebra
-using LogDensityProblems
-using Mooncake
-using NCDatasets
-using Pathfinder
-using PulsarLightcurveExtraction
-using Turing
-
-# Periodically flush stdout/stderr so @info, @progress, etc. appear promptly
-# when running non-interactively under SLURM.
-const _flush_timer = Timer(0; interval=1.0) do _
-    flush(stdout)
-    flush(stderr)
+using Distributed
+if n_chain > 1
+    @info "Adding $n_chain processes for MCMC sampling..."
+    addprocs(n_chain)
 end
 
-# Otherwise the sampler will try to use multiple threads for linear algebra, alas!
-BLAS.set_num_threads(1)
+## Load packages
+@everywhere begin
+    using AbstractMCMC
+    using AdvancedHMC
+    using ArviZ
+    using DimensionalData
+    using DynamicPPL
+    using DynamicPPL: LogDensityFunction
+    using FITSIO
+    using Enzyme
+    using HDF5
+    using LinearAlgebra
+    using LogDensityProblems
+    using Mooncake
+    using NCDatasets
+    using Pathfinder
+    using PulsarLightcurveExtraction
+    using Turing
 
+    # Periodically flush stdout/stderr so @info, @progress, etc. appear promptly
+    # when running non-interactively under SLURM.
+    const _flush_timer = Timer(0; interval=1.0) do _
+        flush(stdout)
+        flush(stderr)
+    end
+
+    # Otherwise the sampler will try to use multiple threads for linear algebra, alas!
+    BLAS.set_num_threads(1)
+end
 ## Load data
 event_time, event_phase, event_pi, segment_start, segment_stop = FITS(joinpath(@__DIR__, "..", "data", "J0740_merged_phase_0.25-3keV.fits.gz"), "r") do f
     event_time = read(f[2], "TIME")
@@ -148,20 +155,30 @@ fg_spectral_design_matrix, bg_spectral_design_matrix = PulsarLightcurveExtractio
 
 ## Cut down the samples, if necessary
 if n_segments !== nothing
-    event_sel = event_segment_indices .<= n_segments
+    est_fi = segment_fisher_estimate(event_segment_indices, segment_start, segment_stop)
+    analysis_segment_inds = sortperm(est_fi)[end:-1:end-n_segments+1] # Start at the most informative segment, and proceed down the list.
+
+    event_sel = [esi in analysis_segment_inds for esi in event_segment_indices]
 
     event_time = event_time[event_sel]
+
     event_segment_indices = event_segment_indices[event_sel]
+
+    # Now the indices are messed up; they need to be re-mapped so that index X becomes I where I is the index in the sorted array in which it appears
+    esi_map = Dict(si => i for (i, si) in enumerate(analysis_segment_inds))
+    event_segment_indices = [esi_map[esi] for esi in event_segment_indices]
+
     fg_spectral_design_matrix = fg_spectral_design_matrix[event_sel, :]
     bg_spectral_design_matrix = bg_spectral_design_matrix[event_sel, :]
 
     cm = cm[event_sel, :]
     sm = sm[event_sel, :]
 
-    segment_start = segment_start[1:n_segments]
-    segment_stop = segment_stop[1:n_segments]
+    segment_start = segment_start[analysis_segment_inds]
+    segment_stop = segment_stop[analysis_segment_inds]
 else
     n_segments = length(segment_start)
+    analysis_segment_inds = collect(1:n_segments)
 end
 
 ## Total exposure over all segments in use
@@ -203,11 +220,11 @@ else
 end
 
 ## Sample it
-@info "Sampling with $n_segments segments of data with $n_chain chains using $(Threads.nthreads()) threads..."
+@info "Sampling with $n_segments segments of data with $n_chain chains using distributed processes..."
 if n_chain == 1
     chains = sample(model, kernel, n_mcmc; n_adapts=n_mcmc, discard_initial=n_mcmc, initial_params=initial_params)
 else
-    chains = sample(model, kernel, MCMCThreads(), n_mcmc, n_chain; n_adapts=n_mcmc, discard_initial=n_mcmc, initial_params=initial_params)
+    chains = sample(model, kernel, MCMCDistributed(), n_mcmc, n_chain; n_adapts=n_mcmc, discard_initial=n_mcmc, initial_params=initial_params)
 end
 
 ## Package it up
@@ -226,7 +243,7 @@ trace = from_mcmcchains(chains;
         :fg_coeffs_sin => (:spec, :fourier)),
     coords=Dict(
         :fourier => 1:n_fourier,
-        :segment => 1:n_segments,
+        :segment => analysis_segment_inds,
         :spec => 1:n_spec))
 
 ## Check minimum ESS:

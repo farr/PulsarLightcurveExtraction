@@ -17,6 +17,8 @@ export cos_sin_matrices
 export construct_bspline_basis
 export construct_bsplane_spectral_bases
 export segment_indices
+export background_estimate
+export segment_fisher_estimate
 export spectral_design_matrices
 export foreground_background_exposure
 export phase_histogram_rates
@@ -134,6 +136,49 @@ function segment_indices(times, segment_starts, segment_ends)
     @assert all((times .< segment_ends[segment_indices]) .&& (times .>= segment_starts[segment_indices])) "Some events do not fall within any segment."
 
     return segment_indices
+end
+
+"""
+    background_estimate(segment_indices, segment_starts, segment_ends; stabilize=true)
+
+Returns a rough estimate of the background count rate in each segment given the
+segment index of each photon.  If `stabilize=true`, each segment will have an
+extra 0.5 counts to avoid zero-rate estimates.
+"""
+function background_estimate(segment_indices, segment_starts, segment_ends; stabilize=true)
+    n_seg = length(segment_indices)
+    counts = zeros(n_seg)
+
+    if stabilize
+        counts .+= 0.5
+    end
+    for i in segment_indices
+        counts[i] += 1.0
+    end
+
+    return counts ./ (segment_starts .- segment_ends)
+end
+
+"""
+    segment_fisher_estimate(segment_indices, segment_starts, segment_ends)
+
+Returns an estimate of the Fisher information available about the background
+(and foreground) rates in each observing segment.
+"""
+function segment_fisher_estimate(segment_indices, segment_starts, segment_ends)
+    n_seg = length(segment_starts)
+
+    Ts = segment_ends .- segment_starts
+
+    counts = zeros(Int, n_seg)
+    for si in segment_indices
+        counts[si] += 1
+    end
+
+    fi = Ts.^2 ./ counts
+    fi[counts .== 0] .= 0.0 # No information here (not quite true, but close enough)
+
+    return fi
 end
 
 """
@@ -489,15 +534,28 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         end
     end
 
+    # Cosine and Sine terms in the lightcurve
     fg_cos_mat = fg_spectral_design_matrix * fg_coeffs_cos  # n_counts × n_fourier
     fg_sin_mat = fg_spectral_design_matrix * fg_coeffs_sin  # n_counts × n_fourier
-    fg_rates = fg_spectral_design_matrix * fg_coeff_const .+
-               dropdims(sum(fg_cos_mat .* cos_design_matrix .+
-                            fg_sin_mat .* sin_design_matrix, dims=2), dims=2)
+
+    # Cosine and Sine contribution to the rate at each photon
+    fg_cos_mat .*= cos_design_matrix
+    fg_sin_mat .*= sin_design_matrix
+
+    # Sum of cosine and sine contribution to the rate
+    fg_var_mat = fg_cos_mat # Aliasing, fg_cos_mat will be destroyed!
+    fg_var_mat .+= fg_sin_mat
+
+    # Total rate is constant term plus variable terms summed over fourier modes
+    fg_rates = fg_spectral_design_matrix * fg_coeff_const
+    fg_rates .+= dropdims(sum(fg_var_mat, dims=2), dims=2)
 
     bg_rates = dropdims(sum(bg_spectral_design_matrix' .* bg[:, event_segment_indices], dims=1), dims=1)
 
-    Turing.@addlogprob! sum(log.(softplus.(fg_rates .+ bg_rates, rate_threshold)))
+    rates = fg_rates # Aliasing, fg_rates is destroyed by this procedure
+    rates .+= bg_rates
+
+    Turing.@addlogprob! sum(log.(softplus.(rates, rate_threshold)))
 
     ex_cts = dot(fg_coeff_const, fg_exposure) + dot(bg, bg_exposure)
     Turing.@addlogprob! -ex_cts
