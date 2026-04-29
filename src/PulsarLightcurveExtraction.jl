@@ -534,35 +534,25 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         end
     end
 
-    # Cosine and Sine terms in the lightcurve
-    fg_cos_mat = fg_spectral_design_matrix * fg_coeffs_cos  # n_counts × n_fourier
-    fg_sin_mat = fg_spectral_design_matrix * fg_coeffs_sin  # n_counts × n_fourier
-
-    # Cosine and Sine contribution to the rate at each photon
-    fg_cos_mat .*= cos_design_matrix
-    fg_sin_mat .*= sin_design_matrix
-
-    # Sum of cosine and sine contribution to the rate
-    fg_var_mat = fg_cos_mat # Aliasing, fg_cos_mat will be destroyed!
-    fg_var_mat .+= fg_sin_mat
-
-    # Total rate is constant term plus variable terms summed over fourier modes
-    fg_rates = fg_spectral_design_matrix * fg_coeff_const
-    fg_rates .+= dropdims(sum(fg_var_mat, dims=2), dims=2)
-
-    bg_rates = dropdims(sum(bg_spectral_design_matrix' .* bg[:, event_segment_indices], dims=1), dims=1)
-
-    rates = fg_rates # Aliasing, fg_rates is destroyed by this procedure
-    rates .+= bg_rates
-
-    for r in rates
-        if r < zero(r)
-            return -Inf
+    log_prob_photons = zero(sigma_fg)
+    @inbounds for i in 1:n_counts
+        r = zero(sigma_fg)
+        seg = event_segment_indices[i]
+        @inbounds for j in 1:n_spec
+            rspec = fg_coeff_const[j]
+            @inbounds for k in 1:n_fourier
+                rspec = muladd(
+                    cos_design_matrix[i,k], fg_coeffs_cos[j,k],
+                    muladd(
+                        sin_design_matrix[i,k], fg_coeffs_sin[j,k], rspec))
+            end
+            r = muladd(fg_spectral_design_matrix[i,j], rspec, r)
+            r = muladd(bg_spectral_design_matrix[i,j], bg[j, seg], r)
         end
+        r <= zero(r) && return -Inf
+        log_prob_photons += log(r)
     end
-    log_rates = log.(rates)
-
-    Turing.@addlogprob! sum(log_rates)
+    Turing.@addlogprob! log_prob_photons
 
     ex_cts = dot(fg_coeff_const, fg_exposure) + dot(bg, bg_exposure)
     Turing.@addlogprob! -ex_cts
