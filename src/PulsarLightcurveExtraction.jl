@@ -555,7 +555,15 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     rates = fg_rates # Aliasing, fg_rates is destroyed by this procedure
     rates .+= bg_rates
 
-    Turing.@addlogprob! sum(log.(softplus.(rates, rate_threshold)))
+    for r in rates
+        if r < zero(r)
+            return -Inf
+        end
+    end
+
+    log_rates = rates # Aliasing, rates is destroyed by this procedure
+    log_rates .= log.(rates) # Take the log
+    Turing.@addlogprob! sum(log_rates)
 
     ex_cts = dot(fg_coeff_const, fg_exposure) + dot(bg, bg_exposure)
     Turing.@addlogprob! -ex_cts
