@@ -100,10 +100,12 @@ end
     using HDF5
     using LinearAlgebra
     using LogDensityProblems
+    using Logging
     using Mooncake
     using NCDatasets
     using Pathfinder
     using PulsarLightcurveExtraction
+    using TerminalLoggers
     using Turing
 
     # Periodically flush stdout/stderr so @info, @progress, etc. appear promptly
@@ -115,6 +117,8 @@ end
 
     # Otherwise the sampler will try to use multiple threads for linear algebra, alas!
     BLAS.set_num_threads(1)
+
+    global_logger(TerminalLogger())
 end
 ## Load data
 event_time, event_phase, event_pi, segment_start, segment_stop = FITS(joinpath(@__DIR__, "..", "data", "J0740_merged_phase_0.25-3keV.fits.gz"), "r") do f
@@ -158,7 +162,8 @@ if n_segments !== nothing
     est_fi = segment_fisher_estimate(event_segment_indices, segment_start, segment_stop)
     analysis_segment_inds = sortperm(est_fi)[end:-1:end-n_segments+1] # Start at the most informative segment, and proceed down the list.
 
-    event_sel = [esi in analysis_segment_inds for esi in event_segment_indices]
+    analysis_segment_inds_set = Set(analysis_segment_inds)
+    event_sel = [esi in analysis_segment_inds_set for esi in event_segment_indices]
 
     event_time = event_time[event_sel]
 
@@ -185,8 +190,7 @@ end
 fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_exposure(pi_min, pi_max, segment_start, segment_stop, arf_start, arf_stop, fg_spline_to_pi, bg_spline_to_pi)
 
 ## Set up the model
-rate_threshold = PulsarLightcurveExtraction.rate_threshold_from_segments(segment_start, segment_stop, pi_min, pi_max, event_segment_indices)
-model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability, rate_threshold)
+model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
 
 ## Set up the autodiff
 if use_mooncake
@@ -198,7 +202,7 @@ else
 end
 
 ## Pathfinder
-pf_result = pathfinder(model; ndraws=n_mcmc, adtype=adtype)
+pf_result = pathfinder(model; ndraws=n_chain, adtype=adtype)
 
 ## Set up external sampler
 inv_metric = diag(pf_result.fit_distribution.Σ)
