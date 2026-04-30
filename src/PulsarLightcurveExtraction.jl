@@ -141,12 +141,12 @@ end
 """
     background_estimate(segment_indices, segment_starts, segment_ends; stabilize=true)
 
-Returns a rough estimate of the background count rate in each segment given the
-segment index of each photon.  If `stabilize=true`, each segment will have an
-extra 0.5 counts to avoid zero-rate estimates.
+Returns a rough estimate of the background count rate and associated uncertainty
+in each segment given the segment index of each photon.  If `stabilize=true`,
+each segment will have an extra 0.5 counts to avoid zero-rate estimates.
 """
 function background_estimate(segment_indices, segment_starts, segment_ends; stabilize=true)
-    n_seg = length(segment_indices)
+    n_seg = length(segment_starts)
     counts = zeros(n_seg)
 
     if stabilize
@@ -156,7 +156,10 @@ function background_estimate(segment_indices, segment_starts, segment_ends; stab
         counts[i] += 1.0
     end
 
-    return counts ./ (segment_starts .- segment_ends)
+    rates = counts ./ (segment_ends .- segment_starts)
+    uncertainties = sqrt.(counts) ./ (segment_ends .- segment_starts)
+
+    return rates, uncertainties
 end
 
 """
@@ -474,7 +477,7 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
+@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability, log_bg_est, log_bg_est_uncert)
     n_counts, n_fourier = size(cos_design_matrix)
     n_spec, n_seg = size(bg_exposure)
 
@@ -509,11 +512,16 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         fg_coeff_const[i] := exp(log_fg_coeff_const[i])
     end
 
+    zest_log_bg = Matrix{Float64}(undef, n_spec, n_seg)
     log_bg = Matrix{Float64}(undef, n_spec, n_seg)
     bg = Matrix{Float64}(undef, n_spec, n_seg)
     @inbounds for j in 1:n_seg
         @inbounds for i in 1:n_spec
-            log_bg[i, j] ~ Normal(mu_log_bg[i], sigma_log_bg[i])
+            zest_log_bg[i,j] ~ Turing.Flat()
+            
+            log_bg[i, j] := log_bg_est[i,j] + log_bg_est_uncert[i,j] * zest_log_bg[i,j] 
+            Turing.@addlogprob! logpdf(Normal(mu_log_bg[i], sigma_log_bg[i]), log_bg[i,j]) # + log(log_bg_est_uncert[i,j]) # Jacobian for scaling by the uncertainty, which is a constant, so can be left off.
+            
             bg[i,j] := exp(log_bg[i,j])
         end
     end

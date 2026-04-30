@@ -51,10 +51,6 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Target acceptance rate for NUTS"
             arg_type = Float64
             default = 0.8
-        "--max-depth"
-            help = "Maximum tree depth for NUTS"
-            arg_type = Int
-            default = 10
         "--use-mooncake"
             help = "Whether to use Mooncake for AD (default: false, i.e. use Enzyme)"
             action = :store_true
@@ -75,8 +71,11 @@ pi_max = parsed_args["pi-max"]
 n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
-max_depth = parsed_args["max-depth"]
 use_mooncake = parsed_args["use-mooncake"]
+
+@warn "Overriding command-line arguments for REPL testing"
+n_chain = 1
+n_segments = 10
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
@@ -89,8 +88,6 @@ end
 
 ## Load packages
 @everywhere begin
-    using AbstractMCMC
-    using AdvancedHMC
     using ArviZ
     using DimensionalData
     using DynamicPPL
@@ -103,7 +100,6 @@ end
     using Logging
     using Mooncake
     using NCDatasets
-    using Pathfinder
     using PulsarLightcurveExtraction
     using TerminalLoggers
     using Turing
@@ -188,9 +184,12 @@ end
 
 ## Total exposure over all segments in use
 fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_exposure(pi_min, pi_max, segment_start, segment_stop, arf_start, arf_stop, fg_spline_to_pi, bg_spline_to_pi)
+bg_est, bg_est_uncert = PulsarLightcurveExtraction.background_estimate(event_segment_indices, segment_start, segment_stop)
+log_bg_est = log.(bg_est)
+log_bg_est_uncert = bg_est_uncert ./ bg_est
 
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
+model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability, log_bg_est, log_bg_est_uncert)
 
 ## Set up the autodiff
 if use_mooncake
@@ -201,34 +200,15 @@ else
     adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 end
 
-## Pathfinder
-pf_result = pathfinder(model; ndraws=n_chain, adtype=adtype)
-
-## Set up external sampler
-inv_metric = diag(pf_result.fit_distribution.Σ)
-metric = AdvancedHMC.DiagEuclideanMetric(inv_metric)
-
-## NUTS sampler with Stan windowed mass-matrix + step-size adaptation.
-## Uses the high-level NUTS constructor so that the auto-detected step size is correctly
-## threaded through make_integrator → make_kernel → make_adaptor (HMCSampler bypasses this).
-hmc_sampler = AdvancedHMC.NUTS(target_arate; max_depth=max_depth, metric=metric)
-kernel = externalsampler(hmc_sampler; adtype=adtype)
-
-## Set up the initialization
-@info "Drawing $n_chain initialization points from Pathfinder distribution..."
-pf_samples = AbstractMCMC.to_samples(DynamicPPL.ParamsWithStats, pf_result.draws_transformed, model)
-initial_params = if n_chain == 1
-    InitFromParams(pf_samples[1].params, InitFromUniform())
-else
-    [InitFromParams(pf_samples[i].params, InitFromUniform()) for i in 1:n_chain]
-end
+## Kernel
+kernel = NUTS(n_mcmc, target_arate; adtype=adtype)
 
 ## Sample it
 @info "Sampling with $n_segments segments of data with $n_chain chains using distributed processes..."
 if n_chain == 1
-    chains = sample(model, kernel, n_mcmc; n_adapts=n_mcmc, discard_initial=n_mcmc, initial_params=initial_params)
+    chains = sample(model, kernel, n_mcmc)
 else
-    chains = sample(model, kernel, MCMCDistributed(), n_mcmc, n_chain; n_adapts=n_mcmc, discard_initial=n_mcmc, initial_params=initial_params)
+    chains = sample(model, kernel, MCMCDistributed(), n_mcmc, n_chain)
 end
 
 ## Package it up
