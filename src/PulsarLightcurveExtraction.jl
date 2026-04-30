@@ -664,7 +664,7 @@ DimArrays.  The `phases` argument should be a DimArray with a dimension of
 the total (foreground + background) contribution.  The lightcurves are in units
 of counts per second as a function of phase.
 """
-function foreground_background_lightcurves_segment(trace, phases, segment_index, pi_min, pi_max, segment_starts, segment_ends, arf_starts, arf_ends, fg_spline_basis, bg_spline_basis)
+function foreground_background_lightcurves_segment(trace, phases, segment_index, analysis_segment_index, pi_min, pi_max, segment_starts, segment_ends, arf_starts, arf_ends, fg_spline_basis, bg_spline_basis)
     T = segment_ends[segment_index] - segment_starts[segment_index]
     p = trace.posterior
     
@@ -686,7 +686,7 @@ function foreground_background_lightcurves_segment(trace, phases, segment_index,
     fg_lightcurve_variable = dropdims(sum(@d(p.fg_coeffs_cos .* cm .+ p.fg_coeffs_sin .* sm), dims=:fourier), dims=:fourier)
     fg_lightcurve = dropdims(sum(@d(fg_exposure .* (p.fg_coeff_const .+ fg_lightcurve_variable)), dims=:spec), dims=:spec)
 
-    bg_lightcurve_unsummed = @d bg_exposure .* p.bg[segment=At(segment_index)] .+ 0.0 .* cm[fourier=At(1)] # Add zero times a phase array to it has a phase dimension
+    bg_lightcurve_unsummed = @d bg_exposure .* p.bg[segment=At(analysis_segment_index)] .+ 0.0 .* cm[fourier=At(1)] # Add zero times a phase array to it has a phase dimension
     bg_lightcurve = dropdims(sum(bg_lightcurve_unsummed, dims=:spec), dims=:spec)
 
     total_lightcurve = @d fg_lightcurve .+ bg_lightcurve
