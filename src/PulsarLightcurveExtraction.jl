@@ -296,7 +296,7 @@ segments.
 function background_mle_per_segment(bg_spectral_design_matrix, event_segment_indices, bg_exposure)
     n_spec, n_seg = size(bg_exposure)
     log_bg_hat = zeros(Float64, n_spec, n_seg)
-    s_hat = fill(Inf, n_spec, n_seg)
+    s_hat = ones(n_spec, n_seg)
 
     @progress "Background MLE per segment" for j in 1:n_seg
         seg_sel = event_segment_indices .== j
@@ -308,7 +308,7 @@ function background_mle_per_segment(bg_spectral_design_matrix, event_segment_ind
             log_bg_hat[:, j] = log_bg_j
             s_hat[:, j] = sqrt.(diag(inv(fisher_j)))                
         catch e
-                @info "Caught exception $(e), covariance will be set to Inf for segment $(j)"
+                @info "Caught exception $(e), covariance will be set to identity for segment $(j)"
         end
     end
 
@@ -477,7 +477,7 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability, log_bg_est, log_bg_est_uncert)
+@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
     n_counts, n_fourier = size(cos_design_matrix)
     n_spec, n_seg = size(bg_exposure)
 
@@ -495,33 +495,28 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
 
     mu_log_bg = Vector{Float64}(undef, n_spec)
     mu_bg = Vector{Float64}(undef, n_spec)
-    @inbounds for i in 1:n_spec
-        mu_log_bg[i] ~ Normal(log(est_bg_rate), 2.0)
+    for i in 1:n_spec
+        mu_log_bg[i] ~ Normal(log(est_bg_rate), 4.0)
         mu_bg[i] := exp(mu_log_bg[i])
     end
 
     sigma_log_bg = Vector{Float64}(undef, n_spec)
-    @inbounds for i in 1:n_spec
-        sigma_log_bg[i] ~ truncated(Normal(0.0, 1.0), 0.0, Inf)
+    for i in 1:n_spec
+        sigma_log_bg[i] ~ truncated(Normal(0.0, 1.0), 0.1, Inf) # Don't let sigma_log_bg get too small, too far into the neck of the funnel.
     end
 
     log_fg_coeff_const = Vector{Float64}(undef, n_spec)
     fg_coeff_const = Vector{Float64}(undef, n_spec)
-    @inbounds for i in 1:n_spec
-        log_fg_coeff_const[i] ~ Normal(log(est_fg_rate), 2.0)
+    for i in 1:n_spec
+        log_fg_coeff_const[i] ~ Normal(log(est_fg_rate), 4.0)
         fg_coeff_const[i] := exp(log_fg_coeff_const[i])
     end
 
-    zest_log_bg = Matrix{Float64}(undef, n_spec, n_seg)
     log_bg = Matrix{Float64}(undef, n_spec, n_seg)
     bg = Matrix{Float64}(undef, n_spec, n_seg)
-    @inbounds for j in 1:n_seg
-        @inbounds for i in 1:n_spec
-            zest_log_bg[i,j] ~ Turing.Flat()
-            
-            log_bg[i, j] := log_bg_est[i,j] + log_bg_est_uncert[i,j] * zest_log_bg[i,j] 
-            Turing.@addlogprob! logpdf(Normal(mu_log_bg[i], sigma_log_bg[i]), log_bg[i,j]) # + log(log_bg_est_uncert[i,j]) # Jacobian for scaling by the uncertainty, which is a constant, so can be left off.
-            
+    for j in 1:n_seg
+        for i in 1:n_spec
+            log_bg[i, j] ~ Normal(mu_log_bg[i], sigma_log_bg[i]) # We expect to have relatively well measured backgrounds and b.g. distribution, so don't need the non-centered parameterization here.            
             bg[i,j] := exp(log_bg[i,j])
         end
     end
@@ -533,8 +528,8 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     dfg_coeffs_sin = Matrix{Float64}(undef, n_spec, n_fourier)
     fg_coeffs_cos = Matrix{Float64}(undef, n_spec, n_fourier)
     fg_coeffs_sin = Matrix{Float64}(undef, n_spec, n_fourier)
-    @inbounds for j in 1:n_fourier
-        @inbounds for i in 1:n_spec
+    for j in 1:n_fourier
+        for i in 1:n_spec
             dfg_coeffs_cos[i, j] ~ Normal(0.0, 1.0)
             dfg_coeffs_sin[i, j] ~ Normal(0.0, 1.0)
             fg_coeffs_cos[i, j] := sigma_fg * dfg_coeffs_cos[i, j]
@@ -543,12 +538,12 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     end
 
     log_prob_photons = zero(sigma_fg)
-    @inbounds for i in 1:n_counts
+    for i in 1:n_counts
         r = zero(sigma_fg)
         seg = event_segment_indices[i]
-        @inbounds for j in 1:n_spec
+        for j in 1:n_spec
             rspec = fg_coeff_const[j]
-            @inbounds for k in 1:n_fourier
+            for k in 1:n_fourier
                 rspec = muladd(
                     cos_design_matrix[i,k], fg_coeffs_cos[j,k],
                     muladd(

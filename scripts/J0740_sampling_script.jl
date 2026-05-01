@@ -73,10 +73,6 @@ n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 use_mooncake = parsed_args["use-mooncake"]
 
-@warn "Overriding command-line arguments for REPL testing"
-n_chain = 1
-n_segments = 10
-
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
@@ -88,6 +84,7 @@ end
 
 ## Load packages
 @everywhere begin
+    using AbstractMCMC
     using ArviZ
     using DimensionalData
     using DynamicPPL
@@ -100,6 +97,7 @@ end
     using Logging
     using Mooncake
     using NCDatasets
+    using Pathfinder
     using PulsarLightcurveExtraction
     using TerminalLoggers
     using Turing
@@ -184,12 +182,9 @@ end
 
 ## Total exposure over all segments in use
 fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_exposure(pi_min, pi_max, segment_start, segment_stop, arf_start, arf_stop, fg_spline_to_pi, bg_spline_to_pi)
-bg_est, bg_est_uncert = PulsarLightcurveExtraction.background_estimate(event_segment_indices, segment_start, segment_stop)
-log_bg_est = log.(bg_est)
-log_bg_est_uncert = bg_est_uncert ./ bg_est
 
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability, log_bg_est, log_bg_est_uncert)
+model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
 
 ## Set up the autodiff
 if use_mooncake
@@ -200,15 +195,25 @@ else
     adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 end
 
+## Find MAP, draw from posterior approximation
+@info "Using Pathfinder to draw from approximate posterior"
+pf_result = Pathfinder.pathfinder(model; adtype=adtype, ndraws=n_chain)
+params = AbstractMCMC.to_samples(DynamicPPL.ParamsWithStats, pf_result.draws_transformed[1:n_chain, :, :], model)
+if n_chain == 1
+    init_params = InitFromParams(params[1].params)
+else
+    init_params = vec([InitFromParams(p.params) for p in params])
+end
+
 ## Kernel
 kernel = NUTS(n_mcmc, target_arate; adtype=adtype)
 
 ## Sample it
 @info "Sampling with $n_segments segments of data with $n_chain chains using distributed processes..."
 if n_chain == 1
-    chains = sample(model, kernel, n_mcmc)
+    chains = sample(model, kernel, n_mcmc; initial_params=init_params)
 else
-    chains = sample(model, kernel, MCMCDistributed(), n_mcmc, n_chain)
+    chains = sample(model, kernel, MCMCDistributed(), n_mcmc, n_chain; initial_params=init_params)
 end
 
 ## Package it up
