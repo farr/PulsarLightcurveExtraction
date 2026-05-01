@@ -73,10 +73,6 @@ n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 use_enzyme = parsed_args["use-enzyme"]
 
-@warn "Overriding command-line arguments for testing purposes"
-n_chain = 1
-n_segments = 10
-
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
