@@ -507,7 +507,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         sigma_log_bg[i] ~ truncated(Normal(0.0, 1.0), 0.1, Inf) # Don't let sigma_log_bg get too small, too far into the neck of the funnel.
     end
 
-    d = LKJCholesky(n_spec, 2.0)
+    d = LKJCholesky(n_spec, 5.0)
     b = bijector(d)
     bi = inverse(b)
     bi_dim = (n_spec * (n_spec - 1)) ÷ 2
