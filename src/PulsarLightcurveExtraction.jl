@@ -1,13 +1,15 @@
 module PulsarLightcurveExtraction
 
 using ArviZ
+using Bijectors
 using BSplineKit
-using ProgressLogging
 using Colors
 using DimensionalData
 using Distributions
 using LinearAlgebra
 using Makie
+using PDMats
+using ProgressLogging
 using Statistics
 using Turing
 
@@ -15,7 +17,7 @@ export logdiffexp
 export PI_TO_KEV
 export cos_sin_matrices
 export construct_bspline_basis
-export construct_bsplane_spectral_bases
+export construct_spline_spectral_bases
 export segment_indices
 export background_estimate
 export segment_fisher_estimate
@@ -505,6 +507,20 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         sigma_log_bg[i] ~ truncated(Normal(0.0, 1.0), 0.1, Inf) # Don't let sigma_log_bg get too small, too far into the neck of the funnel.
     end
 
+    d = LKJCholesky(n_spec, 2.0)
+    b = bijector(d)
+    bi = inverse(b)
+    bi_dim = (n_spec * (n_spec - 1)) ÷ 2
+    unconstrained_cholesky_corr_log_bg = Vector{Float64}(undef, bi_dim)
+    for i in 1:bi_dim
+        unconstrained_cholesky_corr_log_bg[i] ~ Turing.Flat()
+    end
+    bi_arg = 0.1 * unconstrained_cholesky_corr_log_bg # 0.1 ensures that unit-scale unconstrained parameters correspond to non-singular matrices
+    cholesky_corr_log_bg = bi(bi_arg)
+    cholesky_cov_log_bg := Matrix(Diagonal(sigma_log_bg) * cholesky_corr_log_bg.L)
+    cov_log_bg := cholesky_cov_log_bg * cholesky_cov_log_bg'
+    Turing.@addlogprob! logpdf(d, cholesky_corr_log_bg) + logabsdetjac(bi, bi_arg) # The 0.1 scaling is a constant, so not needed here in the Jacobian
+
     log_fg_coeff_const = Vector{Float64}(undef, n_spec)
     fg_coeff_const = Vector{Float64}(undef, n_spec)
     for i in 1:n_spec
@@ -516,9 +532,14 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     bg = Matrix{Float64}(undef, n_spec, n_seg)
     for j in 1:n_seg
         for i in 1:n_spec
-            log_bg[i, j] ~ Normal(mu_log_bg[i], sigma_log_bg[i]) # We expect to have relatively well measured backgrounds and b.g. distribution, so don't need the non-centered parameterization here.            
+            log_bg[i, j] ~ Turing.Flat() # We expect to have relatively well measured backgrounds and b.g. distribution, so don't need the non-centered parameterization here.            
             bg[i,j] := exp(log_bg[i,j])
         end
+    end
+
+    d_log_bg = MvNormal(mu_log_bg, PDMat(Cholesky(cholesky_cov_log_bg, :L, 0)))
+    for j in 1:n_seg
+        Turing.@addlogprob! logpdf(d_log_bg, @view(log_bg[:, j]))
     end
 
     dsigma_fg ~ truncated(Normal(0.0, 1.0), 0.0, Inf)
