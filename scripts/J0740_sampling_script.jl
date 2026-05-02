@@ -51,8 +51,8 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Target acceptance rate for NUTS"
             arg_type = Float64
             default = 0.8
-        "--use-enzyme"
-            help = "Whether to use Enzyme for AD (default: false, i.e. use Mooncake)"
+        "--use-mooncake"
+            help = "Whether to use Mooncake for AD (default: false, i.e. use Enzyme)"
             action = :store_true
     end
     global parsed_args = parse_args(s)
@@ -71,7 +71,7 @@ pi_max = parsed_args["pi-max"]
 n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
-use_enzyme = parsed_args["use-enzyme"]
+use_mooncake = parsed_args["use-mooncake"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
@@ -187,7 +187,7 @@ fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_expo
 model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
 
 ## Set up the autodiff
-if !use_enzyme
+if use_mooncake
     @info "Using Mooncake for AD"
     adtype = AutoMooncake()
 else
