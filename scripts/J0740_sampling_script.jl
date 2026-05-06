@@ -209,11 +209,17 @@ end
 ## Package it up
 trace = from_mcmcchains(chains;
     dims=Dict(
+        :mu_log_bg_raw => (:spec,),
         :mu_log_bg => (:spec,),
         :mu_bg => (:spec,),
         :sigma_log_bg => (:spec,),
+        :unconstrained_cholesky_corr_log_bg => (:cholesky_corr_param,),
+        :cholesky_cov_log_bg => (:spec, :spec2),
+        :cov_log_bg => (:spec, :spec2),
+        :log_fg_coeff_const_raw => (:spec,),
         :log_fg_coeff_const => (:spec,),
         :fg_coeff_const => (:spec,),
+        :log_bg_raw => (:spec, :segment),
         :log_bg => (:spec, :segment),
         :bg => (:spec, :segment),
         :dfg_coeffs_cos => (:spec, :fourier),
@@ -223,7 +229,9 @@ trace = from_mcmcchains(chains;
     coords=Dict(
         :fourier => 1:n_fourier,
         :segment => analysis_segment_inds,
-        :spec => 1:n_spec))
+        :spec => 1:n_spec,
+        :spec2 => 1:n_spec,
+        :cholesky_corr_param => 1:((n_spec * (n_spec - 1)) ÷ 2)))
 
 ## Check minimum ESS:
 println("Minimum ESS: ", minimum(ess(trace)))

@@ -529,15 +529,12 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     fg_coeff_const := exp.(log_fg_coeff_const)
 
     log_bg_raw = Matrix{Float64}(undef, n_spec, n_seg)
-    log_bg = Matrix{Float64}(undef, n_spec, n_seg)
-    log_bg_dist = MvNormal(mu_log_bg, PDMat(Cholesky(cholesky_cov_log_bg, :L, 0)))
     for j in 1:n_seg
         for i in 1:n_spec
-            log_bg_raw[i, j] ~ Turing.Flat() # Normal(0, 1)
-            log_bg[i,j] := log_est_bg_rate + log_bg_raw[i,j] # Shift to the neighborhood of the estimate, which might help initialization
+            log_bg_raw[i, j] ~ Normal(0, 1)
         end
-        Turing.@addlogprob! logpdf(log_bg_dist, @view(log_bg[:, j]))
     end
+    log_bg := mu_log_bg .+ cholesky_cov_log_bg * log_bg_raw
     bg := exp.(log_bg)
 
     dsigma_fg ~ truncated(Normal(0.0, 1.0), 0.0, Inf)
