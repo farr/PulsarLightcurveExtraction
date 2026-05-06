@@ -8,4 +8,4 @@
 
 mkdir -p logs
 
-unbuffer julia --project=. scripts/J0740_sampling_script.jl "$@" > J0740_sampling_${SLURM_JOB_ID}.out 2> J0740_sampling_${SLURM_JOB_ID}.err
+unbuffer julia --project=. scripts/J0740_sampling_script.jl "$@" >> J0740_sampling_${SLURM_JOB_ID}.out 2>> J0740_sampling_${SLURM_JOB_ID}.err
