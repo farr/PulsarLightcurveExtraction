@@ -99,13 +99,6 @@ end
     using PulsarLightcurveExtraction
     using Turing
 
-    # Periodically flush stdout/stderr so @info, @progress, etc. appear promptly
-    # when running non-interactively under SLURM.
-    const _flush_timer = Timer(0; interval=1.0) do _
-        flush(stdout)
-        flush(stderr)
-    end
-
     # Otherwise the sampler will try to use multiple threads for linear algebra, alas!
     BLAS.set_num_threads(1)
 end
