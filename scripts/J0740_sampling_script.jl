@@ -77,10 +77,6 @@ target_arate = parsed_args["target-arate"]
 use_mooncake = parsed_args["use-mooncake"]
 fisher_information_ordering = parsed_args["fisher-information-ordering"]
 
-@warn "Overriding command-line arguments for REPL"
-n_chain = 1
-n_segments = 100
-
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
