@@ -492,91 +492,82 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     total_bg_exposure = sum(bg_exposure)
     total_fg_exposure = sum(fg_exposure)
 
-    est_bg_rate = n_counts / total_bg_exposure
-    est_fg_rate = n_counts / total_fg_exposure
+    est_bg_rate = 0.5 * n_counts / total_bg_exposure
+    est_fg_rate = 0.5 * n_counts / total_fg_exposure
 
-    mu_log_bg = Vector{Float64}(undef, n_spec)
-    mu_bg = Vector{Float64}(undef, n_spec)
-    for i in 1:n_spec
-        mu_log_bg[i] ~ Normal(log(est_bg_rate), 4.0)
-        mu_bg[i] := exp(mu_log_bg[i])
+    log_est_bg_rate = log(est_bg_rate)
+    log_est_fg_rate = log(est_fg_rate)
+
+    mu_log_bg_raw = Vector{Float64}(undef, n_spec)
+    for i in eachindex(mu_log_bg_raw)
+        mu_log_bg_raw[i] ~ Normal(0, 1)
     end
+    mu_log_bg := log_est_bg_rate .+ 4.0 * mu_log_bg_raw
+    mu_bg := exp.(mu_log_bg)
 
     sigma_log_bg = Vector{Float64}(undef, n_spec)
-    for i in 1:n_spec
-        sigma_log_bg[i] ~ truncated(Normal(0.0, 1.0), 0.1, Inf) # Don't let sigma_log_bg get too small, too far into the neck of the funnel.
+    for i in eachindex(sigma_log_bg)
+        sigma_log_bg[i] ~ truncated(Normal(0.0, 1.0), 0.1, Inf)
     end
 
-    d = LKJCholesky(n_spec, 5.0)
+    d = LKJCholesky(n_spec, 2.0)
     b = bijector(d)
     bi = inverse(b)
     bi_dim = (n_spec * (n_spec - 1)) ÷ 2
-    unconstrained_cholesky_corr_log_bg = Vector{Float64}(undef, bi_dim)
-    for i in 1:bi_dim
-        unconstrained_cholesky_corr_log_bg[i] ~ Turing.Flat()
-    end
-    bi_arg = 0.1 * unconstrained_cholesky_corr_log_bg # 0.1 ensures that unit-scale unconstrained parameters correspond to non-singular matrices
+    unconstrained_cholesky_corr_log_bg ~ filldist(Turing.Flat(), bi_dim)
+    bi_arg = 0.16 * unconstrained_cholesky_corr_log_bg # 0.16 ensures that unit-scale unconstrained parameters correspond to non-singular matrices; the std of most components of the prior is 0.33, so this means [-2, 2] init lives well within the prior
     cholesky_corr_log_bg = bi(bi_arg)
-    cholesky_cov_log_bg := Matrix(Diagonal(sigma_log_bg) * cholesky_corr_log_bg.L)
+    cholesky_cov_log_bg := Diagonal(sigma_log_bg) * Matrix(cholesky_corr_log_bg.L)
     cov_log_bg := cholesky_cov_log_bg * cholesky_cov_log_bg'
-    Turing.@addlogprob! logpdf(d, cholesky_corr_log_bg) + logabsdetjac(bi, bi_arg) # The 0.1 scaling is a constant, so not needed here in the Jacobian
+    Turing.@addlogprob! logpdf(d, cholesky_corr_log_bg) + logabsdetjac(bi, bi_arg) # The 0.16 scaling is a constant, so not needed here in the Jacobian
 
-    log_fg_coeff_const = Vector{Float64}(undef, n_spec)
-    fg_coeff_const = Vector{Float64}(undef, n_spec)
-    for i in 1:n_spec
-        log_fg_coeff_const[i] ~ Normal(log(est_fg_rate), 4.0)
-        fg_coeff_const[i] := exp(log_fg_coeff_const[i])
+    log_fg_coeff_const_raw = Vector{Float64}(undef, n_spec)
+    for i in eachindex(log_fg_coeff_const_raw)
+        log_fg_coeff_const_raw[i] ~ Normal(0, 1)
     end
+    log_fg_coeff_const := log_est_fg_rate .+ 4.0 * log_fg_coeff_const_raw
+    fg_coeff_const := exp.(log_fg_coeff_const)
 
+    log_bg_raw = Matrix{Float64}(undef, n_spec, n_seg)
     log_bg = Matrix{Float64}(undef, n_spec, n_seg)
-    bg = Matrix{Float64}(undef, n_spec, n_seg)
+    log_bg_dist = MvNormal(mu_log_bg, PDMat(Cholesky(cholesky_cov_log_bg, :L, 0)))
     for j in 1:n_seg
         for i in 1:n_spec
-            log_bg[i, j] ~ Turing.Flat() # We expect to have relatively well measured backgrounds and b.g. distribution, so don't need the non-centered parameterization here.            
-            bg[i,j] := exp(log_bg[i,j])
+            log_bg_raw[i, j] ~ Turing.Flat() # Normal(0, 1)
+            log_bg[i,j] := log_est_bg_rate + log_bg_raw[i,j] # Shift to the neighborhood of the estimate, which might help initialization
         end
+        Turing.@addlogprob! logpdf(log_bg_dist, @view(log_bg[:, j]))
     end
-
-    d_log_bg = MvNormal(mu_log_bg, PDMat(Cholesky(cholesky_cov_log_bg, :L, 0)))
-    for j in 1:n_seg
-        Turing.@addlogprob! logpdf(d_log_bg, @view(log_bg[:, j]))
-    end
+    bg := exp.(log_bg)
 
     dsigma_fg ~ truncated(Normal(0.0, 1.0), 0.0, Inf)
     sigma_fg := fractional_variability * est_fg_rate * dsigma_fg
 
     dfg_coeffs_cos = Matrix{Float64}(undef, n_spec, n_fourier)
     dfg_coeffs_sin = Matrix{Float64}(undef, n_spec, n_fourier)
-    fg_coeffs_cos = Matrix{Float64}(undef, n_spec, n_fourier)
-    fg_coeffs_sin = Matrix{Float64}(undef, n_spec, n_fourier)
-    for j in 1:n_fourier
-        for i in 1:n_spec
-            dfg_coeffs_cos[i, j] ~ Normal(0.0, 1.0)
-            dfg_coeffs_sin[i, j] ~ Normal(0.0, 1.0)
-            fg_coeffs_cos[i, j] := sigma_fg * dfg_coeffs_cos[i, j]
-            fg_coeffs_sin[i, j] := sigma_fg * dfg_coeffs_sin[i, j]
+    for i in 1:n_spec
+        for j in 1:n_fourier
+            dfg_coeffs_cos[i, j] ~ Normal(0, 1)
+            dfg_coeffs_sin[i, j] ~ Normal(0, 1)
         end
     end
+    fg_coeffs_cos := sigma_fg * dfg_coeffs_cos
+    fg_coeffs_sin := sigma_fg * dfg_coeffs_sin
 
-    log_prob_photons = zero(sigma_fg)
-    for i in 1:n_counts
-        r = zero(sigma_fg)
-        seg = event_segment_indices[i]
-        for j in 1:n_spec
-            rspec = fg_coeff_const[j]
-            for k in 1:n_fourier
-                rspec = muladd(
-                    cos_design_matrix[i,k], fg_coeffs_cos[j,k],
-                    muladd(
-                        sin_design_matrix[i,k], fg_coeffs_sin[j,k], rspec))
-            end
-            r = muladd(fg_spectral_design_matrix[i,j], rspec, r)
-            r = muladd(bg_spectral_design_matrix[i,j], bg[j, seg], r)
-        end
-        r <= zero(r) && return -Inf
-        log_prob_photons += log(r)
-    end
-    Turing.@addlogprob! log_prob_photons
+    # Foreground rates per photon (n_counts,)
+    c_cos = fg_spectral_design_matrix * fg_coeffs_cos   # n_counts × n_fourier
+    c_sin = fg_spectral_design_matrix * fg_coeffs_sin   # n_counts × n_fourier
+    r_fg = fg_spectral_design_matrix * fg_coeff_const .+
+           vec(sum(c_cos .* cos_design_matrix .+ c_sin .* sin_design_matrix, dims=2))
+
+    # Background rates per photon (n_counts,): r_bg[i] = Σ_j bg_spec[i,j] * bg[j, seg_i]
+    # Transpose bg cheaply (O(1), small matrix), gather rows by segment index, then
+    # multiply element-wise with bg_spectral_design_matrix in its natural layout.
+    r_bg = vec(sum(bg_spectral_design_matrix .* transpose(bg)[event_segment_indices, :], dims=2))
+
+    r = r_fg .+ r_bg
+    any(r .<= 0) && (Turing.@addlogprob! -Inf; return)
+    Turing.@addlogprob! sum(log.(r))
 
     ex_cts = dot(fg_coeff_const, fg_exposure) + dot(bg, bg_exposure)
     Turing.@addlogprob! -ex_cts

@@ -54,6 +54,9 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
         "--use-mooncake"
             help = "Whether to use Mooncake for AD (default: false, i.e. use Enzyme)"
             action = :store_true
+        "--fisher-information-ordering"
+            help = "Whether to order segments by their Fisher information content (default: false, i.e. use the segments in the order of observation)"
+            action = :store_true
     end
     global parsed_args = parse_args(s)
 end
@@ -72,6 +75,11 @@ n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 use_mooncake = parsed_args["use-mooncake"]
+fisher_information_ordering = parsed_args["fisher-information-ordering"]
+
+@warn "Overriding command-line arguments for REPL"
+n_chain = 1
+n_segments = 100
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
@@ -84,22 +92,15 @@ end
 
 ## Load packages
 @everywhere begin
-    using AbstractMCMC
     using ArviZ
     using DimensionalData
-    using DynamicPPL
-    using DynamicPPL: LogDensityFunction
     using FITSIO
     using Enzyme
     using HDF5
     using LinearAlgebra
-    using LogDensityProblems
-    using Logging
     using Mooncake
     using NCDatasets
-    using Pathfinder
     using PulsarLightcurveExtraction
-    using TerminalLoggers
     using Turing
 
     # Periodically flush stdout/stderr so @info, @progress, etc. appear promptly
@@ -111,8 +112,6 @@ end
 
     # Otherwise the sampler will try to use multiple threads for linear algebra, alas!
     BLAS.set_num_threads(1)
-
-    global_logger(TerminalLogger())
 end
 ## Load data
 event_time, event_phase, event_pi, segment_start, segment_stop = FITS(joinpath(@__DIR__, "..", "data", "J0740_merged_phase_0.25-3keV.fits.gz"), "r") do f
@@ -153,8 +152,12 @@ fg_spectral_design_matrix, bg_spectral_design_matrix = PulsarLightcurveExtractio
 
 ## Cut down the samples, if necessary
 if n_segments !== nothing
-    est_fi = segment_fisher_estimate(event_segment_indices, segment_start, segment_stop)
-    analysis_segment_inds = sortperm(est_fi)[end:-1:end-n_segments+1] # Start at the most informative segment, and proceed down the list.
+    if fisher_information_ordering
+        est_fi = segment_fisher_estimate(event_segment_indices, segment_start, segment_stop)
+        analysis_segment_inds = sortperm(est_fi)[end:-1:end-n_segments+1] # Start at the most informative segment, and proceed down the list.
+    else
+        analysis_segment_inds = collect(1:n_segments)
+    end
 
     analysis_segment_inds_set = Set(analysis_segment_inds)
     event_sel = [esi in analysis_segment_inds_set for esi in event_segment_indices]
@@ -163,7 +166,7 @@ if n_segments !== nothing
 
     event_segment_indices = event_segment_indices[event_sel]
 
-    # Now the indices are messed up; they need to be re-mapped so that index X becomes I where I is the index in the sorted array in which it appears
+    # Now the indices may be messed up; they need to be re-mapped so that index X becomes I where I is the index in the sorted array in which it appears
     esi_map = Dict(si => i for (i, si) in enumerate(analysis_segment_inds))
     event_segment_indices = [esi_map[esi] for esi in event_segment_indices]
 
@@ -195,14 +198,12 @@ else
     adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 end
 
-## Find MAP, draw from posterior approximation
-@info "Using Pathfinder to draw from approximate posterior"
-pf_result = Pathfinder.pathfinder(model; adtype=adtype, ndraws=n_chain)
-params = AbstractMCMC.to_samples(DynamicPPL.ParamsWithStats, pf_result.draws_transformed[1:n_chain, :, :], model)
+## Initialization
+@info "Initializing from U(-2,2) in unconstrained space"
 if n_chain == 1
-    init_params = InitFromParams(params[1].params)
+    init_params = InitFromUniform()
 else
-    init_params = vec([InitFromParams(p.params) for p in params])
+    init_params = [InitFromUniform() for _ in 1:n_chain]
 end
 
 ## Kernel
