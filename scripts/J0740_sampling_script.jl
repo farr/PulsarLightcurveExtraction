@@ -180,8 +180,8 @@ const_bg_est = size(bg_spectral_design_matrix, 1) / sum(bg_exposure)
 mu_log_bg = log(const_bg_est)
 sigma_log_bg = 4.0 # Hard coded large uncertainty just to barely regularize the Fisher.
 
-log_bg_mle = []
-log_bg_fisher = []
+log_bg_mle = Vector{Float64}[]
+log_bg_fisher = Matrix{Float64}[]
 for i in axes(bg_exposure, 2)
     sel = event_segment_indices .== i
     mle, fisher = PulsarLightcurveExtraction.segment_bg_mle_and_information(bg_spectral_design_matrix[sel, :], bg_exposure[:, i], mu_log_bg, sigma_log_bg)
