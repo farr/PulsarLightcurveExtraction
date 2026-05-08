@@ -175,8 +175,22 @@ end
 ## Total exposure over all segments in use
 fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_exposure(pi_min, pi_max, segment_start, segment_stop, arf_start, arf_stop, fg_spline_to_pi, bg_spline_to_pi)
 
+## Find the MLE and Fisher for each segment
+const_bg_est = size(bg_spectral_design_matrix, 1) / sum(bg_exposure)
+mu_log_bg = log(const_bg_est)
+sigma_log_bg = 4.0 # Hard coded large uncertainty just to barely regularize the Fisher.
+
+log_bg_mle = []
+log_bg_fisher = []
+for i in axes(bg_exposure, 2)
+    sel = event_segment_indices .== i
+    mle, fisher = PulsarLightcurveExtraction.segment_bg_mle_and_information(bg_spectral_design_matrix[sel, :], bg_exposure[:, i], mu_log_bg, sigma_log_bg)
+    push!(log_bg_mle, mle)
+    push!(log_bg_fisher, fisher)
+end
+
 ## Set up the model
-model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
+model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, log_bg_mle, log_bg_fisher, fractional_variability)
 
 ## Set up the autodiff
 if use_mooncake

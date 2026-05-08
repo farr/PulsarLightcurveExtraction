@@ -11,6 +11,7 @@ using Makie
 using PDMats
 using ProgressLogging
 using Statistics
+using StatsBase
 using Turing
 
 export logdiffexp
@@ -25,12 +26,12 @@ export spectral_design_matrices
 export foreground_background_exposure
 export phase_histogram_rates
 export spec_fourier_model
-export rate_threshold_from_segments
-export background_mle_per_segment
 export husl_wheel
 export traceplot
 export median_and_bands
 export foreground_background_lightcurves_segment
+export single_segment_bg_only_model
+export segment_bg_mle_and_information
 
 raw"""
     softplus(x[, eps=1.0])
@@ -252,72 +253,6 @@ function foreground_background_exposure(pi_min, pi_max, segment_starts, segment_
 end
 
 """
-    background_maxl_and_fisher(bg_spectral_design_matrix, bg_exposure)
-
-Returns the maximum-likelihood estimate and fisher information matrix for the
-log of the background spectral parameters given the background spectral design
-matrix and the background exposure, assuming a pure-background model.
-"""
-function background_maxl_and_fisher(bg_spectral_design_matrix, bg_exposure)
-    function dlogl_dlogb(log_bg)
-        rates = bg_spectral_design_matrix * exp.(log_bg)
-        [(sum(bg_spectral_design_matrix[:, j] ./ rates) - bg_exposure[j])*exp(log_bg[j]) for j in axes(log_bg, 1)]
-    end
-
-    function dlogl_dlogb2(log_bg)
-        rates = bg_spectral_design_matrix * exp.(log_bg)
-
-        [-sum((bg_spectral_design_matrix[:,j] .* bg_spectral_design_matrix[:,k]) ./ (rates .* rates)) * exp(log_bg[j]) * exp(log_bg[k]) for j in axes(log_bg, 1), k in axes(log_bg, 1)]
-    end
-
-    log_bg_old = -Inf .* ones(size(bg_exposure, 1))
-    log_bg = log(size(bg_spectral_design_matrix, 1) / sum(bg_exposure)) .* ones(size(bg_exposure, 1))
-    iterations = 0
-    while sum(abs.(log_bg_old .- log_bg)) > 1e-3 && iterations < 100
-        log_bg_old = log_bg
-        resid = dlogl_dlogb(log_bg)
-        fisher = -dlogl_dlogb2(log_bg) + Diagonal(1e-6 * ones(size(log_bg)))
-        log_bg = log_bg .+ fisher \ resid
-        iterations += 1
-    end
-
-    (log_bg, -dlogl_dlogb2(log_bg))
-end
-
-"""
-    background_mle_per_segment(bg_spectral_design_matrix, event_segment_indices, bg_exposure)
-
-For each observing segment, compute the MLE of the log background spectral
-coefficients under a pure-background Poisson model, and the marginal
-uncertainties from the Fisher information.  Returns `(log_bg_hat, s_hat)`,
-both of shape `(n_spec, n_seg)`.  Empty segments have `s_hat[:, j]` set to
-`Inf`, which causes the partially non-centered parameterization in
-`spec_fourier_model` to reduce to the standard non-centered form for those
-segments.
-"""
-function background_mle_per_segment(bg_spectral_design_matrix, event_segment_indices, bg_exposure)
-    n_spec, n_seg = size(bg_exposure)
-    log_bg_hat = zeros(Float64, n_spec, n_seg)
-    s_hat = ones(n_spec, n_seg)
-
-    @progress "Background MLE per segment" for j in 1:n_seg
-        seg_sel = event_segment_indices .== j
-        try
-            log_bg_j, fisher_j = background_maxl_and_fisher(
-                bg_spectral_design_matrix[seg_sel, :],
-                bg_exposure[:, j]
-            )
-            log_bg_hat[:, j] = log_bg_j
-            s_hat[:, j] = sqrt.(diag(inv(fisher_j)))                
-        catch e
-                @info "Caught exception $(e), covariance will be set to identity for segment $(j)"
-        end
-    end
-
-    return log_bg_hat, s_hat
-end
-
-"""
     phase_histogram_rates(phases, exposure_time)
 
 Given photon `phases` in `[0, 1]` and total `exposure_time` (seconds), build a
@@ -352,31 +287,6 @@ function phase_histogram_rates(phases, exposure_time)
     rates = counts ./ (exposure_time .* bin_widths)
     rate_uncertainty = sqrt.(counts) ./ (exposure_time .* bin_widths)
     return bin_edges, rates, rate_uncertainty
-end
-
-"""
-    rate_threshold_from_segments(segment_start, segment_stop, pi_min, pi_max, event_segment_indices)
-
-Compute a softplus threshold rate (counts per second per PI bin) suitable for
-use in `spec_fourier_model`.  For each segment, the background count rate is
-estimated as `(n_events + 0.5) / T` (the +0.5 ensures positivity even for
-empty segments).  The threshold is 10% of the minimum per-segment rate
-distributed uniformly across active PI bins, ensuring it is negligible relative
-to any physically meaningful signal.
-"""
-function rate_threshold_from_segments(segment_start, segment_stop, pi_min, pi_max, event_segment_indices)
-    n_segments = length(segment_start)
-    n_pi_active = pi_max - pi_min + 1
-
-    counts_per_segment = zeros(Int, n_segments)
-    for seg in event_segment_indices
-        counts_per_segment[seg] += 1
-    end
-
-    T_segments = segment_stop .- segment_start
-    rates_per_segment = (counts_per_segment .+ 0.5) ./ T_segments
-
-    return 0.1 * minimum(rates_per_segment) / n_pi_active
 end
 
 raw"""
@@ -479,7 +389,7 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
-@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, fractional_variability)
+@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, mle_log_bgs, fisher_log_bgs, fractional_variability)
     n_counts, n_fourier = size(cos_design_matrix)
     n_spec, n_seg = size(bg_exposure)
 
@@ -528,13 +438,30 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     log_fg_coeff_const := log_est_fg_rate .+ 4.0 * log_fg_coeff_const_raw
     fg_coeff_const := exp.(log_fg_coeff_const)
 
+    log_bg_dist = MvNormal(mu_log_bg, PDMat(Cholesky(cholesky_cov_log_bg, :L, 0)))
     log_bg_raw = Matrix{Float64}(undef, n_spec, n_seg)
+    log_bg = Matrix{Float64}(undef, n_spec, n_seg)
     for j in 1:n_seg
         for i in 1:n_spec
-            log_bg_raw[i, j] ~ Normal(0, 1)
+            log_bg_raw[i, j] ~ Turing.Flat()
         end
+        F = fisher_log_bgs[j]
+        x0 = mle_log_bgs[j]
+
+        # ΣF + I is not symmetric, so use LU rather than Cholesky to solve.
+        # S = (ΣF + I)^{-1} Σ = (F + Σ^{-1})^{-1} is algebraically symmetric PD,
+        # so Symmetric() is justified before the Cholesky.
+        ΣF = cov_log_bg * F
+        ΣFI_lu = lu(ΣF + I)
+
+        S = ΣFI_lu \ cov_log_bg
+        S_cholesky = cholesky(Symmetric(S))
+
+        log_bg_hat = ΣFI_lu \ (ΣF * x0 + mu_log_bg)
+        log_bg[:, j] := log_bg_hat .+ S_cholesky.L * log_bg_raw[:, j]
+
+        Turing.@addlogprob! logpdf(log_bg_dist, log_bg[:,j]) + sum(log.(diag(S_cholesky.L)))
     end
-    log_bg := mu_log_bg .+ cholesky_cov_log_bg * log_bg_raw
     bg := exp.(log_bg)
 
     dsigma_fg ~ truncated(Normal(0.0, 1.0), 0.0, Inf)
@@ -696,6 +623,32 @@ function foreground_background_lightcurves_segment(trace, phases, segment_index,
     total_lightcurve = @d fg_lightcurve .+ bg_lightcurve
 
     (fg_lightcurve, bg_lightcurve, total_lightcurve)
+end
+
+@model function single_segment_bg_only_model(spectral_design_matrix, exposure, mu_log_bg, sigma_log_bg)
+    n_counts, n_spec = size(spectral_design_matrix)
+
+    log_bg_raw = Vector{Float64}(undef, n_spec)
+    for i in eachindex(log_bg_raw)
+        log_bg_raw[i] ~ Normal(0, 1)
+    end
+    log_bg := mu_log_bg .+ sigma_log_bg .* log_bg_raw
+    bg := exp.(log_bg)
+
+    r = spectral_design_matrix * bg
+    Turing.@addlogprob! sum(log.(r))
+
+    ex_cts = dot(bg, exposure)
+    Turing.@addlogprob! -ex_cts
+
+    return
+end
+
+function segment_bg_mle_and_information(spectral_design_matrix, exposure, mu_log_bg, sigma_log_bg)
+    model = single_segment_bg_only_model(spectral_design_matrix, exposure, mu_log_bg, sigma_log_bg)
+    map_estimate = maximum_a_posteriori(model)
+
+    return map_estimate.params[@varname(log_bg)], StatsBase.informationmatrix(map_estimate)
 end
 
 end # module PulsarLightcurveExtraction
