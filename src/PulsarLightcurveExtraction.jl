@@ -389,6 +389,7 @@ typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
 """
+
 @model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, mle_log_bgs, fisher_log_bgs, fractional_variability)
     n_counts, n_fourier = size(cos_design_matrix)
     n_spec, n_seg = size(bg_exposure)
@@ -448,19 +449,23 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         F = fisher_log_bgs[j]
         x0 = mle_log_bgs[j]
 
-        # ΣF + I is not symmetric, so use LU rather than Cholesky to solve.
-        # S = (ΣF + I)^{-1} Σ = (F + Σ^{-1})^{-1} is algebraically symmetric PD,
-        # so Symmetric() is justified before the Cholesky.
+        # Posterior mean: LU avoids materializing Σ^{-1}.
         ΣF = cov_log_bg * F
         ΣFI_lu = lu(ΣF + I)
-
-        S = ΣFI_lu \ cov_log_bg
-        S_cholesky = cholesky(Symmetric(S))
-
         log_bg_hat = ΣFI_lu \ (ΣF * x0 + mu_log_bg)
-        log_bg[:, j] := log_bg_hat .+ S_cholesky.L * log_bg_raw[:, j]
 
-        Turing.@addlogprob! logpdf(log_bg_dist, log_bg[:,j]) + sum(log.(diag(S_cholesky.L)))
+        # S = (F + Σ⁻¹)⁻¹ = (ΣF + I)⁻¹ Σ via LU; analytically symmetric PD.
+        S_raw = ΣFI_lu \ cov_log_bg
+        S_chol = cholesky(Symmetric(S_raw); check=false)
+        if !issuccess(S_chol)
+            Turing.@addlogprob! -Inf
+            return
+        end
+        S_chol_L = S_chol.L
+
+        log_bg[:, j] := log_bg_hat .+ S_chol_L * log_bg_raw[:, j]
+
+        Turing.@addlogprob! logpdf(log_bg_dist, log_bg[:,j]) + sum(log.(diag(S_chol_L)))
     end
     bg := exp.(log_bg)
 

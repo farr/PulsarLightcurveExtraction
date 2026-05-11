@@ -77,6 +77,11 @@ target_arate = parsed_args["target-arate"]
 use_mooncake = parsed_args["use-mooncake"]
 fisher_information_ordering = parsed_args["fisher-information-ordering"]
 
+@warn "Overriding command-line arguments for testing."
+n_chain = 1
+n_segments = 100
+use_mooncake = true
+
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
@@ -102,6 +107,7 @@ end
     # Otherwise the sampler will try to use multiple threads for linear algebra, alas!
     BLAS.set_num_threads(1)
 end
+
 ## Load data
 event_time, event_phase, event_pi, segment_start, segment_stop = FITS(joinpath(@__DIR__, "..", "data", "J0740_merged_phase_0.25-3keV.fits.gz"), "r") do f
     event_time = read(f[2], "TIME")
@@ -185,6 +191,17 @@ log_bg_fisher = Matrix{Float64}[]
 for i in axes(bg_exposure, 2)
     sel = event_segment_indices .== i
     mle, fisher = PulsarLightcurveExtraction.segment_bg_mle_and_information(bg_spectral_design_matrix[sel, :], bg_exposure[:, i], mu_log_bg, sigma_log_bg)
+
+    # Ensure positive-definitness of Fisher.
+    fisher = Symmetric(fisher)
+    λs = eigvals(fisher)
+    λ_min = sqrt(eps(Float64)) * maximum(abs.(λs))
+    if minimum(λs) < λ_min
+        shift = (λ_min - minimum(λs))
+        @info "Shifting FIM for segment $i by $(round(shift, sigdigits=3)) to ensure positive-definitness."
+        fisher = fisher + shift * I
+    end
+
     push!(log_bg_mle, mle)
     push!(log_bg_fisher, fisher)
 end
