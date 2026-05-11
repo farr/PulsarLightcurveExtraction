@@ -219,11 +219,12 @@ else
 end
 
 ## Initialization
-@info "Initializing from U(-2,2) in unconstrained space"
+@info "Finding MAP point for initialization."
+map_estimate = maximum_a_posteriori(model; adtype=adtype, initial_params=InitFromUniform(-0.1, 0.1))
 if n_chain == 1
-    init_params = InitFromUniform()
+    init_params = InitFromParams(map_estimate)
 else
-    init_params = [InitFromUniform() for _ in 1:n_chain]
+    init_params = [InitFromParams(map_estimate) for _ in 1:n_chain]
 end
 
 ## Kernel
