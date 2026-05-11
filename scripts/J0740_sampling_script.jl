@@ -51,8 +51,12 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Target acceptance rate for NUTS"
             arg_type = Float64
             default = 0.8
-        "--use-mooncake"
-            help = "Whether to use Mooncake for AD (default: false, i.e. use Enzyme)"
+        "--init-width"
+            help = "Width of the uniform initialization distribution in unconstrained space (default: 0.1, i.e. U(-0.1, 0.1))"
+            arg_type = Float64
+            default = 0.1
+        "--use-enzyme"
+            help = "Whether to use Enzyme for AD (default: false, i.e. use Mooncake)"
             action = :store_true
         "--fisher-information-ordering"
             help = "Whether to order segments by their Fisher information content (default: false, i.e. use the segments in the order of observation)"
@@ -74,7 +78,8 @@ pi_max = parsed_args["pi-max"]
 n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
-use_mooncake = parsed_args["use-mooncake"]
+init_width = parsed_args["init-width"]
+use_enzyme = parsed_args["use-enzyme"]
 fisher_information_ordering = parsed_args["fisher-information-ordering"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
@@ -205,21 +210,20 @@ end
 model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, log_bg_mle, log_bg_fisher, fractional_variability)
 
 ## Set up the autodiff
-if use_mooncake
-    @info "Using Mooncake for AD"
-    adtype = AutoMooncake()
-else
+if use_enzyme
     @info "Using Enzyme for AD"
     adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
+else
+    @info "Using Mooncake for AD"
+    adtype = AutoMooncake()
 end
 
 ## Initialization
-@info "Finding MAP point for initialization."
-map_estimate = maximum_a_posteriori(model; adtype=adtype, initial_params=InitFromUniform(-0.1, 0.1))
+@info "Initializing U(-$(init_width), $(init_width)) in unconstrained space"
 if n_chain == 1
-    init_params = InitFromParams(map_estimate)
+    init_params = InitFromUniform(-init_width, init_width)
 else
-    init_params = [InitFromParams(map_estimate) for _ in 1:n_chain]
+    init_params = [InitFromUniform(-init_width, init_width) for _ in 1:n_chain]
 end
 
 ## Kernel

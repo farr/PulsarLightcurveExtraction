@@ -421,16 +421,9 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         sigma_log_bg[i] ~ truncated(Normal(0.0, 1.0), 0.1, Inf)
     end
 
-    d = LKJCholesky(n_spec, 2.0)
-    b = bijector(d)
-    bi = inverse(b)
-    bi_dim = (n_spec * (n_spec - 1)) ÷ 2
-    unconstrained_cholesky_corr_log_bg ~ filldist(Turing.Flat(), bi_dim)
-    bi_arg = 0.16 * unconstrained_cholesky_corr_log_bg # 0.16 ensures that unit-scale unconstrained parameters correspond to non-singular matrices; the std of most components of the prior is 0.33, so this means [-2, 2] init lives well within the prior
-    cholesky_corr_log_bg = bi(bi_arg)
+    cholesky_corr_log_bg ~ LKJCholesky(n_spec, 2.0)
     cholesky_cov_log_bg := Diagonal(sigma_log_bg) * Matrix(cholesky_corr_log_bg.L)
     cov_log_bg := cholesky_cov_log_bg * cholesky_cov_log_bg'
-    Turing.@addlogprob! logpdf(d, cholesky_corr_log_bg) + logabsdetjac(bi, bi_arg) # The 0.16 scaling is a constant, so not needed here in the Jacobian
 
     log_fg_coeff_const_raw = Vector{Float64}(undef, n_spec)
     for i in eachindex(log_fg_coeff_const_raw)
@@ -449,23 +442,48 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         F = fisher_log_bgs[j]
         x0 = mle_log_bgs[j]
 
-        # Posterior mean: LU avoids materializing Σ^{-1}.
-        ΣF = cov_log_bg * F
-        ΣFI_lu = lu(ΣF + I)
-        log_bg_hat = ΣFI_lu \ (ΣF * x0 + mu_log_bg)
+        # An important matrix is S^{-1} = (F + Sigma^{-1}) = F + (L^T)^{-1}
+        # L^{-1} = (L^{T})^{-1} (L^T F L + I) L^{-1} Or S = L (L^T F L + I)^{-1}
+        # L^T.  It is straightforward to show that (L^T F L + I)^{-1} is a
+        # symmetric, PD matrix, so amenable to Cholesky.  We are jumping through
+        # these hoops because we never want to materialize Sigma^{-1} for
+        # stability reasons.
+        H = cholesky_cov_log_bg' * F * cholesky_cov_log_bg + I
+        H_choleksy = cholesky(Symmetric(H); check=false)
+        if !issuccess(H_choleksy)
+            Turing.@addlogprob! -Inf
+            return
+        end
 
-        # S = (F + Σ⁻¹)⁻¹ = (ΣF + I)⁻¹ Σ via LU; analytically symmetric PD.
-        S_raw = ΣFI_lu \ cov_log_bg
-        S_chol = cholesky(Symmetric(S_raw); check=false)
+        # Now we find S and Cholesky decomp it
+        S = cholesky_cov_log_bg * (H_choleksy \ cholesky_cov_log_bg')
+        S_chol = cholesky(Symmetric(S); check=false)
         if !issuccess(S_chol)
             Turing.@addlogprob! -Inf
             return
         end
-        S_chol_L = S_chol.L
 
-        log_bg[:, j] := log_bg_hat .+ S_chol_L * log_bg_raw[:, j]
+        # We are approximating the log-posterior as 
+        #
+        # -1/2 ( (x - x0)' F (x - x0) + (x - mu)' Sigma^{-1} (x - mu) )
+        #
+        # Thus the max occurs at 
+        #
+        # x_hat = (F + Sigma^{-1})^{-1} (F x0 + Sigma^{-1} mu)
+        #
+        # But we want to make sure to never materialize Sigma^{-1} for stability, so re-write as 
+        #
+        # x_hat = (F + Sigma^{-1})^{-1} Sigma^{-1} (Sigma F x0 + mu)
+        #
+        # Or 
+        #
+        # x_hat = (Sigma F + I)^{-1} (Sigma F x0 + mu) 
+        ΣF = cov_log_bg * F
+        log_bg_hat = (ΣF + I) \ (ΣF * x0 + mu_log_bg)
 
-        Turing.@addlogprob! logpdf(log_bg_dist, log_bg[:,j]) + sum(log.(diag(S_chol_L)))
+        log_bg[:, j] := log_bg_hat .+ S_chol.L * log_bg_raw[:, j]
+
+        Turing.@addlogprob! logpdf(log_bg_dist, log_bg[:,j]) + sum(log.(diag(S_chol.L)))
     end
     bg := exp.(log_bg)
 
