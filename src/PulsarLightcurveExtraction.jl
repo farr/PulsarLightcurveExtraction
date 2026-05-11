@@ -510,7 +510,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     # Background rates per photon (n_counts,): r_bg[i] = Σ_j bg_spec[i,j] * bg[j, seg_i]
     # Transpose bg cheaply (O(1), small matrix), gather rows by segment index, then
     # multiply element-wise with bg_spectral_design_matrix in its natural layout.
-    r_bg = vec(sum(bg_spectral_design_matrix .* transpose(bg)[event_segment_indices, :], dims=2))
+    r_bg = [dot(view(bg_spectral_design_matrix, i, :), view(bg, :, event_segment_indices[i])) for i in eachindex(event_segment_indices)]
 
     r = r_fg .+ r_bg
     any(r .<= 0) && (Turing.@addlogprob! -Inf; return)
