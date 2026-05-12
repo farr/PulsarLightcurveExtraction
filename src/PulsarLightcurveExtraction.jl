@@ -12,6 +12,7 @@ using PDMats
 using ProgressLogging
 using Statistics
 using StatsBase
+using Tullio
 using Turing
 
 export logdiffexp
@@ -481,7 +482,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         ΣF = cov_log_bg * F
         log_bg_hat = (ΣF + I) \ (ΣF * x0 + mu_log_bg)
 
-        log_bg[:, j] := log_bg_hat .+ S_chol.L * log_bg_raw[:, j]
+        log_bg[:, j] := log_bg_hat + S_chol.L * log_bg_raw[:, j]
 
         Turing.@addlogprob! logpdf(log_bg_dist, log_bg[:,j]) + sum(log.(diag(S_chol.L)))
     end
@@ -501,25 +502,24 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     fg_coeffs_cos := sigma_fg * dfg_coeffs_cos
     fg_coeffs_sin := sigma_fg * dfg_coeffs_sin
 
-    # Foreground rates per photon (n_counts,)
-    c_cos = fg_spectral_design_matrix * fg_coeffs_cos   # n_counts × n_fourier
-    c_sin = fg_spectral_design_matrix * fg_coeffs_sin   # n_counts × n_fourier
-    r_fg = fg_spectral_design_matrix * fg_coeff_const .+
-           vec(sum(c_cos .* cos_design_matrix .+ c_sin .* sin_design_matrix, dims=2))
-
-    # Background rates per photon (n_counts,): r_bg[i] = Σ_j bg_spec[i,j] * bg[j, seg_i]
-    # Transpose bg cheaply (O(1), small matrix), gather rows by segment index, then
-    # multiply element-wise with bg_spectral_design_matrix in its natural layout.
-    r_bg = [dot(view(bg_spectral_design_matrix, i, :), view(bg, :, event_segment_indices[i])) for i in eachindex(event_segment_indices)]
-
-    r = r_fg .+ r_bg
-    any(r .<= 0) && (Turing.@addlogprob! -Inf; return)
+    r = compute_r(fg_spectral_design_matrix, fg_coeff_const, fg_coeffs_cos, fg_coeffs_sin, cos_design_matrix, sin_design_matrix, bg_spectral_design_matrix, bg, event_segment_indices)
+    any(<=(0), r) && (Turing.@addlogprob! -Inf; return)
     Turing.@addlogprob! sum(log.(r))
 
     ex_cts = dot(fg_coeff_const, fg_exposure) + dot(bg, bg_exposure)
     Turing.@addlogprob! -ex_cts
 
     return
+end
+
+function compute_r(fg_spectral_design_matrix, fg_coeff_const,
+                   fg_coeffs_cos, fg_coeffs_sin,
+                   cos_design_matrix, sin_design_matrix,
+                   bg_spectral_design_matrix, bg, event_segment_indices)
+    @tullio threads=false r[i] := fg_spectral_design_matrix[i,k] * fg_coeff_const[k] +
+                    fg_spectral_design_matrix[i,k] * fg_coeffs_cos[k,j] * cos_design_matrix[i,j] +
+                    fg_spectral_design_matrix[i,k] * fg_coeffs_sin[k,j] * sin_design_matrix[i,j] +
+                    bg_spectral_design_matrix[i,k] * bg[k, event_segment_indices[i]]
 end
 
 """
