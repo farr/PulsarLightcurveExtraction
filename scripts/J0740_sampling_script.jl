@@ -55,8 +55,8 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Width of the uniform initialization distribution in unconstrained space (default: 0.1, i.e. U(-0.1, 0.1))"
             arg_type = Float64
             default = 0.1
-        "--use-enzyme"
-            help = "Whether to use Enzyme for AD (default: false, i.e. use Mooncake)"
+        "--use-mooncake"
+            help = "Whether to use Mooncake for AD (default: false, i.e. use Enzyme)"
             action = :store_true
         "--fisher-information-ordering"
             help = "Whether to order segments by their Fisher information content (default: false, i.e. use the segments in the order of observation)"
@@ -79,7 +79,7 @@ n_chain = parsed_args["n-chain"]
 n_mcmc = parsed_args["n-mcmc"]
 target_arate = parsed_args["target-arate"]
 init_width = parsed_args["init-width"]
-use_enzyme = parsed_args["use-enzyme"]
+use_mooncake = parsed_args["use-mooncake"]
 fisher_information_ordering = parsed_args["fisher-information-ordering"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
@@ -216,7 +216,7 @@ end
 model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, log_bg_mle, log_bg_fisher, fractional_variability)
 
 ## Set up the autodiff
-if use_enzyme
+if !use_mooncake
     @info "Using Enzyme for AD"
     adtype = AutoEnzyme(mode=Enzyme.set_runtime_activity(Enzyme.Reverse))
 else

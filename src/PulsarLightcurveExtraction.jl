@@ -472,15 +472,20 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         #
         # x_hat = (F + Sigma^{-1})^{-1} (F x0 + Sigma^{-1} mu)
         #
-        # But we want to make sure to never materialize Sigma^{-1} for stability, so re-write as 
+        # But we want to make sure to never materialize Sigma^{-1} for stability, and we would like to stay in the realm of so re-write as 
         #
         # x_hat = (F + Sigma^{-1})^{-1} Sigma^{-1} (Sigma F x0 + mu)
         #
+        # x_hat = (L^T^{-1} (L^T F L + I) L^{-1})^{-1} L^T^{-1} L^{-1} (Sigma F x0 + mu)
+        #
+        # x_hat = L (L^T F L + I)^{-1} L^{-1} (Sigma F x0 + mu)
+        #
         # Or 
         #
-        # x_hat = (Sigma F + I)^{-1} (Sigma F x0 + mu) 
+        # x_hat = L H^{-1} L^{-1} (Sigma F x0 + mu)
         ΣF = cov_log_bg * F
-        log_bg_hat = (ΣF + I) \ (ΣF * x0 + mu_log_bg)
+        L_lt = LowerTriangular(cholesky_cov_log_bg)
+        log_bg_hat = L_lt * (H \ (L_lt \ (ΣF * x0 + mu_log_bg)))
 
         log_bg[:, j] := log_bg_hat + S_chol.L * log_bg_raw[:, j]
 
