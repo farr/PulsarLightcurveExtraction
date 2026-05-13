@@ -93,8 +93,11 @@ end
 
 ## Load packages
 @everywhere begin
+    using AbstractMCMC
+    using AdvancedHMC
     using ArviZ
     using DimensionalData
+    using DynamicPPL
     using FITSIO
     using Enzyme
     using HDF5
@@ -107,6 +110,9 @@ end
     # Otherwise the sampler will try to use multiple threads for linear algebra, alas!
     BLAS.set_num_threads(1)
 end
+
+# Pathfinder only needs to run on the main process for initialization.
+using Pathfinder
 
 ## Load data
 event_time, event_phase, event_pi, segment_start, segment_stop = FITS(joinpath(@__DIR__, "..", "data", "J0740_merged_phase_0.25-3keV.fits.gz"), "r") do f
@@ -218,23 +224,57 @@ else
     adtype = AutoMooncake()
 end
 
-## Initialization
-@info "Initializing U(-$(init_width), $(init_width)) in unconstrained space"
+## Pathfinder initialization
+# init_scale=init_width uses Pathfinder.UniformSampler(init_width), giving U(-init_width, init_width)
+# in unconstrained space — must stay near zero to avoid LKJ coordinate singularities.
+@info "Running Pathfinder (init_scale=$(init_width)) to initialize sampler position and diagonal metric..."
+pf_result = pathfinder(model;
+    init_scale=init_width,
+    ndraws=max(n_chain, 4),
+    adtype=adtype
+)
+
+# Diagonal of the LBFGS inverse-Hessian approximation in unconstrained space.
+# fit_distribution.Σ is a low-rank structured matrix (rank ≤ 2*lbfgs_memory);
+# diag() extracts the diagonal without ever allocating the O(d²) dense matrix.
+metric_diag = diag(pf_result.fit_distribution.Σ)
+@info "Pathfinder complete. Model unconstrained dimension: $(length(metric_diag))"
+
+## NUTS kernel with Pathfinder-initialized diagonal mass matrix
+# Passing a DiagEuclideanMetric instance to NUTS sets the initial M⁻¹ = metric_diag
+# (posterior covariance diagonal ≈ optimal diagonal preconditioning) and seeds the
+# WelfordVar mass-matrix adaptor at this value so warmup refines rather than discards it.
+kernel = externalsampler(
+    AdvancedHMC.NUTS(target_arate; metric=DiagEuclideanMetric(metric_diag));
+    adtype=adtype
+)
+
+## Per-chain starting positions from Pathfinder draws
+# AbstractMCMC.to_samples converts the MCMCChains.Chains in draws_transformed back to
+# ParamsWithStats objects; .params gives the constrained NamedTuple for InitFromParams.
+pf_samples = AbstractMCMC.to_samples(DynamicPPL.ParamsWithStats, pf_result.draws_transformed, model)
 if n_chain == 1
-    init_params = InitFromUniform(-init_width, init_width)
+    init_params = InitFromParams(pf_samples[1].params)
 else
-    init_params = [InitFromUniform(-init_width, init_width) for _ in 1:n_chain]
+    init_params = [InitFromParams(pf_samples[i].params) for i in 1:n_chain]
 end
 
-## Kernel
-kernel = NUTS(n_mcmc, target_arate; adtype=adtype)
-
 ## Sample it
-@info "Sampling with $n_segments segments of data with $n_chain chains using distributed processes..."
+# n_adapts must be passed explicitly: externalsampler forwards kwargs to AdvancedHMC's
+# step function, which defaults to n_adapts=0 (no adaptation) if not given. Without
+# this, the Pathfinder metric is never refined by WelfordVar and the step size found
+# by find_good_stepsize is never updated by dual averaging.
+#
+# discard_initial=n_mcmc drops the warmup transitions from the returned chain.
+# AbstractMCMC still runs those steps (so AdvancedHMC's i counter increments and
+# adaptation fires for i ≤ n_adapts), it just omits them from the output.
+# Total steps = 2*n_mcmc; returned samples = n_mcmc (all post-warmup).
+n_warmup = n_mcmc
+@info "Sampling with $n_segments segments of data with $n_chain chains ($n_warmup warmup + $n_mcmc sampling steps)..."
 if n_chain == 1
-    chains = sample(model, kernel, n_mcmc; initial_params=init_params)
+    chains = sample(model, kernel, 2 * n_mcmc; n_adapts=n_warmup, discard_initial=n_warmup, initial_params=init_params)
 else
-    chains = sample(model, kernel, MCMCDistributed(), n_mcmc, n_chain; initial_params=init_params)
+    chains = sample(model, kernel, MCMCDistributed(), 2 * n_mcmc, n_chain; n_adapts=n_warmup, discard_initial=n_warmup, initial_params=init_params)
 end
 
 ## Package it up
