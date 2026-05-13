@@ -485,7 +485,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         # x_hat = L H^{-1} L^{-1} (Sigma F x0 + mu)
         ΣF = cov_log_bg * F
         L_lt = LowerTriangular(cholesky_cov_log_bg)
-        log_bg_hat = L_lt * (H \ (L_lt \ (ΣF * x0 + mu_log_bg)))
+        log_bg_hat = L_lt * (H_choleksy \ (L_lt \ (ΣF * x0 + mu_log_bg)))
 
         log_bg[:, j] := log_bg_hat + S_chol.L * log_bg_raw[:, j]
 
