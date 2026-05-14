@@ -66,9 +66,9 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             arg_type = Int
             default = 75
         "--term-buffer"
-            help = "Number of step-size-only adaptation steps at the end of warmup (Stan default: 50, we use 100)"
+            help = "Number of step-size-only adaptation steps at the end of warmup (Stan default: 50)"
             arg_type = Int
-            default = 100
+            default = 50
         "--window-size"
             help = "Initial mass-matrix adaptation window size (Stan default: 25; doubles each window)"
             arg_type = Int
