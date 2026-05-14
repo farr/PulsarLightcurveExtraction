@@ -98,7 +98,7 @@ term_buffer = parsed_args["term-buffer"]
 window_size = parsed_args["window-size"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
-outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix)_with_warmup.nc")
+outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
 using Distributed
 if n_chain > 1
