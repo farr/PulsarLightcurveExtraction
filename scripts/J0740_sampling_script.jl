@@ -61,6 +61,18 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
         "--fisher-information-ordering"
             help = "Whether to order segments by their Fisher information content (default: false, i.e. use the segments in the order of observation)"
             action = :store_true
+        "--init-buffer"
+            help = "Number of fast-adaptation steps at the start of warmup (Stan default: 75)"
+            arg_type = Int
+            default = 75
+        "--term-buffer"
+            help = "Number of step-size-only adaptation steps at the end of warmup (Stan default: 50, we use 100)"
+            arg_type = Int
+            default = 100
+        "--window-size"
+            help = "Initial mass-matrix adaptation window size (Stan default: 25; doubles each window)"
+            arg_type = Int
+            default = 25
     end
     global parsed_args = parse_args(s)
 end
@@ -81,9 +93,16 @@ target_arate = parsed_args["target-arate"]
 init_width = parsed_args["init-width"]
 use_mooncake = parsed_args["use-mooncake"]
 fisher_information_ordering = parsed_args["fisher-information-ordering"]
+init_buffer = parsed_args["init-buffer"]
+term_buffer = parsed_args["term-buffer"]
+window_size = parsed_args["window-size"]
+
+@warn "Overriding command-line arguments for testing."
+n_chain = 1
+n_segments = 10
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
-outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
+outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix)_with_warmup.nc")
 
 using Distributed
 if n_chain > 1
@@ -244,8 +263,72 @@ metric_diag = diag(pf_result.fit_distribution.Σ)
 # Passing a DiagEuclideanMetric instance to NUTS sets the initial M⁻¹ = metric_diag
 # (posterior covariance diagonal ≈ optimal diagonal preconditioning) and seeds the
 # WelfordVar mass-matrix adaptor at this value so warmup refines rather than discards it.
+#
+# AdvancedHMC.NUTS hardcodes init_buffer/term_buffer/window_size inside make_adaptor
+# with no constructor kwargs to override them.  NUTSCustomBuffer is a minimal subtype
+# that mirrors NUTS exactly but forwards the three buffer sizes to StanHMCAdaptor.
+# All other AbstractHMCSampler interface methods (make_metric, make_step_size,
+# make_integrator, make_initial_params) fall through to the generic dispatches on
+# AbstractHMCSampler, which only require the .metric and .integrator fields.
+struct NUTSCustomBuffer{
+    T<:Real,
+    I<:Union{Symbol,AdvancedHMC.AbstractIntegrator},
+    M<:Union{Symbol,AdvancedHMC.AbstractMetric},
+} <: AdvancedHMC.AbstractHMCSampler
+    δ::T
+    max_depth::Int
+    Δ_max::T
+    integrator::I
+    metric::M
+    init_buffer::Int
+    term_buffer::Int
+    window_size::Int
+end
+function NUTSCustomBuffer(
+    δ;
+    max_depth=10,
+    Δ_max=1000.0,
+    integrator=:leapfrog,
+    metric=:diagonal,
+    init_buffer=75,
+    term_buffer=50,
+    window_size=25,
+)
+    T = typeof(float(δ))
+    return NUTSCustomBuffer(
+        T(δ), max_depth, T(Δ_max), integrator, metric, init_buffer, term_buffer, window_size
+    )
+end
+AdvancedHMC.sampler_eltype(spl::NUTSCustomBuffer) = typeof(spl.δ)
+function AdvancedHMC.make_adaptor(
+    spl::NUTSCustomBuffer,
+    metric::AdvancedHMC.AbstractMetric,
+    integrator::AdvancedHMC.AbstractIntegrator,
+)
+    return StanHMCAdaptor(
+        MassMatrixAdaptor(metric),
+        StepSizeAdaptor(spl.δ, integrator);
+        init_buffer=spl.init_buffer,
+        term_buffer=spl.term_buffer,
+        window_size=spl.window_size,
+    )
+end
+function AdvancedHMC.make_kernel(
+    spl::NUTSCustomBuffer, integrator::AdvancedHMC.AbstractIntegrator
+)
+    return HMCKernel(
+        Trajectory{MultinomialTS}(integrator, GeneralisedNoUTurn(spl.max_depth, spl.Δ_max))
+    )
+end
+
 kernel = externalsampler(
-    AdvancedHMC.NUTS(target_arate; metric=DiagEuclideanMetric(metric_diag));
+    NUTSCustomBuffer(
+        target_arate;
+        metric=DiagEuclideanMetric(metric_diag),
+        init_buffer=init_buffer,
+        term_buffer=term_buffer,
+        window_size=window_size,
+    );
     adtype=adtype
 )
 
@@ -265,26 +348,27 @@ end
 # this, the Pathfinder metric is never refined by WelfordVar and the step size found
 # by find_good_stepsize is never updated by dual averaging.
 #
-# discard_initial=n_mcmc drops the warmup transitions from the returned chain.
-# AbstractMCMC still runs those steps (so AdvancedHMC's i counter increments and
-# adaptation fires for i ≤ n_adapts), it just omits them from the output.
-# Total steps = 2*n_mcmc; returned samples = n_mcmc (all post-warmup).
+# discard_initial is omitted here (defaults to 0) so all 2*n_mcmc steps are retained.
+# We split the chain below to pass warmup draws into ArviZ's warmup groups.
 n_warmup = n_mcmc
 @info "Sampling with $n_segments segments of data with $n_chain chains ($n_warmup warmup + $n_mcmc sampling steps)..."
 if n_chain == 1
-    chains = sample(model, kernel, 2 * n_mcmc; n_adapts=n_warmup, discard_initial=n_warmup, initial_params=init_params)
+    chains = sample(model, kernel, 2 * n_mcmc; n_adapts=n_warmup, initial_params=init_params)
 else
-    chains = sample(model, kernel, MCMCDistributed(), 2 * n_mcmc, n_chain; n_adapts=n_warmup, discard_initial=n_warmup, initial_params=init_params)
+    chains = sample(model, kernel, MCMCDistributed(), 2 * n_mcmc, n_chain; n_adapts=n_warmup, initial_params=init_params)
 end
 
+## Split warmup from sampling draws
+warmup_chains   = chains[1:n_warmup, :, :]
+sampling_chains = chains[(n_warmup + 1):end, :, :]
+
 ## Package it up
-trace = from_mcmcchains(chains;
+trace = from_mcmcchains(sampling_chains;
     dims=Dict(
         :mu_log_bg_raw => (:spec,),
         :mu_log_bg => (:spec,),
         :mu_bg => (:spec,),
         :sigma_log_bg => (:spec,),
-        :unconstrained_cholesky_corr_log_bg => (:cholesky_corr_param,),
         :cholesky_cov_log_bg => (:spec, :spec2),
         :cov_log_bg => (:spec, :spec2),
         :log_fg_coeff_const_raw => (:spec,),
@@ -304,7 +388,7 @@ trace = from_mcmcchains(chains;
         :spec2 => 1:n_spec,
         :cholesky_corr_param => 1:((n_spec * (n_spec - 1)) ÷ 2)))
 
-## Check minimum ESS:
+## Check minimum ESS (sampling draws only):
 println("Minimum ESS: ", minimum(ess(trace)))
 
 ## Save the chains

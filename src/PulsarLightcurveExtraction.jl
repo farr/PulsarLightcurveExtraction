@@ -424,6 +424,16 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
 
     cholesky_corr_log_bg ~ LKJCholesky(n_spec, 2.0)
     cholesky_cov_log_bg := Diagonal(sigma_log_bg) * Matrix(cholesky_corr_log_bg.L)
+    # Guard against tanh saturation in the LKJCholesky bijection: when unconstrained
+    # partial-correlation parameters are large, tanh(y) == ±1.0 exactly in floating
+    # point, exhausting a row's "budget" and driving that row's diagonal entry to
+    # exactly 0.  sigma_log_bg >= 0.1 doesn't help because the zero comes from
+    # cholesky_corr_log_bg.L[i,i], not sigma.  Catch it here before L_lt \ ... throws
+    # SingularException in generic_trimatdiv!.
+    if minimum(diag(cholesky_cov_log_bg)) <= 0
+        Turing.@addlogprob! -Inf
+        return
+    end
     cov_log_bg := cholesky_cov_log_bg * cholesky_cov_log_bg'
 
     log_fg_coeff_const_raw = Vector{Float64}(undef, n_spec)
