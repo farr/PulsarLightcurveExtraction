@@ -97,10 +97,6 @@ init_buffer = parsed_args["init-buffer"]
 term_buffer = parsed_args["term-buffer"]
 window_size = parsed_args["window-size"]
 
-@warn "Overriding command-line arguments for testing."
-n_chain = 1
-n_segments = 10
-
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix)_with_warmup.nc")
 
