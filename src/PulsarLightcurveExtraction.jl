@@ -432,7 +432,12 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     # exactly 0.  sigma_log_bg >= 0.1 doesn't help because the zero comes from
     # cholesky_corr_log_bg.L[i,i], not sigma.  Catch it here before L_lt \ ... throws
     # SingularException in generic_trimatdiv!.
-    if minimum(diag(cholesky_cov_log_bg)) <= 0
+    #
+    # Use !all(>(0), ...) rather than minimum(...) <= 0: Julia's min(x, NaN) == x
+    # (NaN is skipped when it trails), so minimum can return a positive value even when
+    # a later diagonal entry is NaN, letting the guard pass silently.  !all(>(0), ...)
+    # treats NaN as "not > 0" and always fires correctly.
+    if !all(>(0), diag(cholesky_cov_log_bg))
         Turing.@addlogprob! -Inf
         return
     end
@@ -463,7 +468,10 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         # stability reasons.
         H = cholesky_cov_log_bg' * F * cholesky_cov_log_bg + I
         H_choleksy = cholesky(Symmetric(H); check=false)
-        if !issuccess(H_choleksy)
+        # issuccess checks H_choleksy.info, but in rare edge cases dpotrf can set
+        # info=0 yet still produce a zero on the diagonal (underflow during a later
+        # pivot step).  Check the factor diagonal directly as a second line of defence.
+        if !issuccess(H_choleksy) || !all(>(0), diag(H_choleksy.factors))
             Turing.@addlogprob! -Inf
             return
         end
