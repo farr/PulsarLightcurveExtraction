@@ -256,67 +256,6 @@ metric_diag = diag(pf_result.fit_distribution.Σ)
 @info "Pathfinder complete. Model unconstrained dimension: $(length(metric_diag))"
 
 ## NUTS kernel with Pathfinder-initialized diagonal mass matrix
-# Passing a DiagEuclideanMetric instance to NUTS sets the initial M⁻¹ = metric_diag
-# (posterior covariance diagonal ≈ optimal diagonal preconditioning) and seeds the
-# WelfordVar mass-matrix adaptor at this value so warmup refines rather than discards it.
-#
-# AdvancedHMC.NUTS hardcodes init_buffer/term_buffer/window_size inside make_adaptor
-# with no constructor kwargs to override them.  NUTSCustomBuffer is a minimal subtype
-# that mirrors NUTS exactly but forwards the three buffer sizes to StanHMCAdaptor.
-# All other AbstractHMCSampler interface methods (make_metric, make_step_size,
-# make_integrator, make_initial_params) fall through to the generic dispatches on
-# AbstractHMCSampler, which only require the .metric and .integrator fields.
-struct NUTSCustomBuffer{
-    T<:Real,
-    I<:Union{Symbol,AdvancedHMC.AbstractIntegrator},
-    M<:Union{Symbol,AdvancedHMC.AbstractMetric},
-} <: AdvancedHMC.AbstractHMCSampler
-    δ::T
-    max_depth::Int
-    Δ_max::T
-    integrator::I
-    metric::M
-    init_buffer::Int
-    term_buffer::Int
-    window_size::Int
-end
-function NUTSCustomBuffer(
-    δ;
-    max_depth=10,
-    Δ_max=1000.0,
-    integrator=:leapfrog,
-    metric=:diagonal,
-    init_buffer=75,
-    term_buffer=50,
-    window_size=25,
-)
-    T = typeof(float(δ))
-    return NUTSCustomBuffer(
-        T(δ), max_depth, T(Δ_max), integrator, metric, init_buffer, term_buffer, window_size
-    )
-end
-AdvancedHMC.sampler_eltype(spl::NUTSCustomBuffer) = typeof(spl.δ)
-function AdvancedHMC.make_adaptor(
-    spl::NUTSCustomBuffer,
-    metric::AdvancedHMC.AbstractMetric,
-    integrator::AdvancedHMC.AbstractIntegrator,
-)
-    return StanHMCAdaptor(
-        MassMatrixAdaptor(metric),
-        StepSizeAdaptor(spl.δ, integrator);
-        init_buffer=spl.init_buffer,
-        term_buffer=spl.term_buffer,
-        window_size=spl.window_size,
-    )
-end
-function AdvancedHMC.make_kernel(
-    spl::NUTSCustomBuffer, integrator::AdvancedHMC.AbstractIntegrator
-)
-    return HMCKernel(
-        Trajectory{MultinomialTS}(integrator, GeneralisedNoUTurn(spl.max_depth, spl.Δ_max))
-    )
-end
-
 kernel = externalsampler(
     NUTSCustomBuffer(
         target_arate;
