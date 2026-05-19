@@ -73,6 +73,10 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Initial mass-matrix adaptation window size (Stan default: 25; doubles each window)"
             arg_type = Int
             default = 25
+        "--max-tree-depth"
+            help = "Maximum tree depth for NUTS (default: 10; lower values speed up warmup at the cost of some sampling efficiency)"
+            arg_type = Int
+            default = 10
     end
     global parsed_args = parse_args(s)
 end
@@ -96,6 +100,7 @@ fisher_information_ordering = parsed_args["fisher-information-ordering"]
 init_buffer = parsed_args["init-buffer"]
 term_buffer = parsed_args["term-buffer"]
 window_size = parsed_args["window-size"]
+max_tree_depth = parsed_args["max-tree-depth"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
@@ -259,6 +264,7 @@ metric_diag = diag(pf_result.fit_distribution.Σ)
 kernel = externalsampler(
     NUTSCustomBuffer(
         target_arate;
+        max_depth=max_tree_depth,
         metric=DiagEuclideanMetric(metric_diag),
         init_buffer=init_buffer,
         term_buffer=term_buffer,
