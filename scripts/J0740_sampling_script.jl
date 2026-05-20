@@ -216,7 +216,9 @@ log_bg_mle = Vector{Float64}[]
 log_bg_fisher = Matrix{Float64}[]
 for i in axes(bg_exposure, 2)
     sel = event_segment_indices .== i
-    mle, fisher = PulsarLightcurveExtraction.segment_bg_mle_and_information(bg_spectral_design_matrix[sel, :], bg_exposure[:, i], mu_log_bg, sigma_log_bg)
+    mle, fisher_raw = PulsarLightcurveExtraction.segment_bg_mle_and_information(bg_spectral_design_matrix[sel, :], bg_exposure[:, i], mu_log_bg, sigma_log_bg)
+
+    fisher = fisher_raw / (sigma_log_bg*sigma_log_bg) # Fisher is in the *raw* space, want it in the log_bg space
 
     # Ensure positive-definitness of Fisher.
     fisher = Symmetric(fisher)
