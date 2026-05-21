@@ -210,7 +210,7 @@ fg_exposure, bg_exposure = PulsarLightcurveExtraction.foreground_background_expo
 ## Find the MLE and Fisher for each segment
 const_bg_est = size(bg_spectral_design_matrix, 1) / sum(bg_exposure)
 mu_log_bg = log(const_bg_est)
-sigma_log_bg = 4.0 # Hard coded large uncertainty just to barely regularize the Fisher.
+sigma_log_bg = 10.0 # Hard coded large uncertainty just to barely regularize the Fisher.
 
 log_bg_mle = Vector{Float64}[]
 log_bg_fisher = Matrix{Float64}[]
