@@ -693,8 +693,12 @@ end
 end
 
 function segment_bg_mle_and_information(spectral_design_matrix, exposure, mu_log_bg, sigma_log_bg)
+    n_spec = size(spectral_design_matrix, 2)
     model = single_segment_bg_only_model(spectral_design_matrix, exposure, mu_log_bg, sigma_log_bg)
-    map_estimate = maximum_a_posteriori(model)
+    # Initialize at the prior mean (log_bg_raw = 0 → log_bg = mu_log_bg) to avoid the optimizer
+    # starting with bg ≈ 0, which gives log(r) = -Inf and breaks gradients before the prior can act.
+    init_params = InitFromParams((log_bg_raw = zeros(n_spec),))
+    map_estimate = maximum_a_posteriori(model; initial_params = init_params)
 
     return map_estimate.params[@varname(log_bg)], StatsBase.informationmatrix(map_estimate)
 end

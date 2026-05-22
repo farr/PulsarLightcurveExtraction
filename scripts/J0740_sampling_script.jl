@@ -132,7 +132,11 @@ end
 end
 
 # Pathfinder only needs to run on the main process for initialization.
+using Logging
 using Pathfinder
+using ProgressLogging
+using TerminalLoggers
+global_logger(TerminalLogger())
 
 ## Load data
 event_time, event_phase, event_pi, segment_start, segment_stop = FITS(joinpath(@__DIR__, "..", "data", "J0740_merged_phase_0.25-3keV.fits.gz"), "r") do f
@@ -214,7 +218,7 @@ sigma_log_bg = 10.0 # Hard coded large uncertainty just to barely regularize the
 
 log_bg_mle = Vector{Float64}[]
 log_bg_fisher = Matrix{Float64}[]
-for i in axes(bg_exposure, 2)
+@progress "Fisher estimation" for i in axes(bg_exposure, 2)
     sel = event_segment_indices .== i
     mle, fisher_raw = PulsarLightcurveExtraction.segment_bg_mle_and_information(bg_spectral_design_matrix[sel, :], bg_exposure[:, i], mu_log_bg, sigma_log_bg)
 
