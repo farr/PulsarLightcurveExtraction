@@ -222,6 +222,20 @@ for i in axes(bg_exposure, 2)
 
     # Ensure positive-definitness of Fisher.
     fisher = Symmetric(fisher)
+
+    # Check for NaN/Inf before eigvals (which throws an opaque ArgumentError).
+    if any(!isfinite, fisher)
+        n_nan = count(isnan, fisher)
+        n_inf = count(isinf, fisher)
+        @warn "Fisher matrix for segment $i (analysis index $(analysis_segment_inds[i])) contains non-finite entries" n_nan n_inf
+        @warn "fisher_raw for segment $i" fisher_raw
+        @warn "fisher (rescaled) for segment $i" fisher
+        @warn "MLE for segment $i" mle
+        @warn "bg_exposure[:, $i]" bg_exposure[:, i]
+        n_events = count(sel)
+        @warn "n_events in segment $i" n_events
+    end
+
     λs = eigvals(fisher)
     λ_min = sqrt(eps(Float64)) * maximum(abs.(λs))
     if minimum(λs) < λ_min
