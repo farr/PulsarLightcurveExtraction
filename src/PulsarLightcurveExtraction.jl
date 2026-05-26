@@ -403,7 +403,8 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     @assert size(event_segment_indices) == (n_counts,) "Event segment indices must have size n_counts."
     @assert size(fg_exposure) == (n_spec,) "Foreground exposure must have size n_spec."
 
-    total_bg_exposure = sum(bg_exposure)
+    bg_exposure_spec = dropdims(sum(bg_exposure, dims=2), dims=2)
+    total_bg_exposure = sum(bg_exposure_spec)
     total_fg_exposure = sum(fg_exposure)
 
     est_bg_rate = 0.5 * n_counts / total_bg_exposure
@@ -412,11 +413,28 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     log_est_bg_rate = log(est_bg_rate)
     log_est_fg_rate = log(est_fg_rate)
 
-    mu_log_bg_raw = Vector{Float64}(undef, n_spec)
-    for i in eachindex(mu_log_bg_raw)
-        mu_log_bg_raw[i] ~ Normal(0, 1)
+    # log_total_counts = log(exp(log_fg_const)*fg_exposure + exp(mu_log_bg)*bg_exposure) 
+    #
+    # => An estimate of the total number of counts attributable to each spectral
+    # bin.  This parameter gets well-constrained with a lot of data, while the
+    # fg/mu_log_bg parameters exhibit a funnel geometry that makes the sampler
+    # struggle
+    log_total_counts = Vector{Float64}(undef, n_spec)
+    for i in eachindex(log_total_counts)
+        log_total_counts[i] ~ Turing.Flat() # Prior will be put on later
     end
-    mu_log_bg := log_est_bg_rate .+ 4.0 * mu_log_bg_raw
+
+    log_fg_coeff_const = Vector{Float64}(undef, n_spec)
+    for i in eachindex(log_fg_coeff_const)
+        log_fg_coeff_const[i] ~ truncated(Normal(log_est_fg_rate, 4), nothing, log_total_counts[i] - log(fg_exposure[i]))
+    end
+    fg_coeff_const := exp.(log_fg_coeff_const)
+
+    mu_log_bg = Vector{Float64}(undef, n_spec)
+    for i in eachindex(mu_log_bg)
+        mu_log_bg[i] := logdiffexp(log_total_counts[i], log_fg_coeff_const[i] + log(fg_exposure[i])) - log(bg_exposure_spec[i])
+        Turing.@addlogprob! logpdf(Normal(log_est_bg_rate, 4), mu_log_bg[i]) + log_total_counts[i] - mu_log_bg[i] # logpdf(mu_log_bg) + log(Jacobian(mu_log_bg -> log_total_counts))
+    end
     mu_bg := exp.(mu_log_bg)
 
     sigma_log_bg = Vector{Float64}(undef, n_spec)
@@ -442,13 +460,6 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         return
     end
     cov_log_bg := cholesky_cov_log_bg * cholesky_cov_log_bg'
-
-    log_fg_coeff_const_raw = Vector{Float64}(undef, n_spec)
-    for i in eachindex(log_fg_coeff_const_raw)
-        log_fg_coeff_const_raw[i] ~ Normal(0, 1)
-    end
-    log_fg_coeff_const := log_est_fg_rate .+ 4.0 * log_fg_coeff_const_raw
-    fg_coeff_const := exp.(log_fg_coeff_const)
 
     log_bg_dist = MvNormal(mu_log_bg, PDMat(Cholesky(cholesky_cov_log_bg, :L, 0)))
     log_bg_raw = Matrix{Float64}(undef, n_spec, n_seg)

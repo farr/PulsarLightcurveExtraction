@@ -102,6 +102,10 @@ term_buffer = parsed_args["term-buffer"]
 window_size = parsed_args["window-size"]
 max_tree_depth = parsed_args["max-tree-depth"]
 
+@warn "Overriding commant line arguments for testing"
+n_chain = 1
+n_segments = 10
+
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
@@ -326,13 +330,12 @@ sampling_chains = chains[(n_warmup + 1):end, :, :]
 ## Package it up
 trace = from_mcmcchains(sampling_chains;
     dims=Dict(
-        :mu_log_bg_raw => (:spec,),
+        :log_total_counts => (:spec,),
         :mu_log_bg => (:spec,),
         :mu_bg => (:spec,),
         :sigma_log_bg => (:spec,),
         :cholesky_cov_log_bg => (:spec, :spec2),
         :cov_log_bg => (:spec, :spec2),
-        :log_fg_coeff_const_raw => (:spec,),
         :log_fg_coeff_const => (:spec,),
         :fg_coeff_const => (:spec,),
         :log_bg_raw => (:spec, :segment),
