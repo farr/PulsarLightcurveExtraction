@@ -326,6 +326,7 @@ sampling_chains = chains[(n_warmup + 1):end, :, :]
 ## Package it up
 trace = from_mcmcchains(sampling_chains;
     dims=Dict(
+        :dlog_total_counts => (:spec,),
         :log_total_counts => (:spec,),
         :mu_log_bg => (:spec,),
         :mu_bg => (:spec,),
