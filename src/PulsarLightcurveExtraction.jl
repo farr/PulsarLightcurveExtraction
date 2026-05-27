@@ -13,6 +13,7 @@ using PDMats
 using ProgressLogging
 using Statistics
 using StatsBase
+using StatsFuns
 using Tullio
 using Turing
 
@@ -419,9 +420,12 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     # bin.  This parameter gets well-constrained with a lot of data, while the
     # fg/mu_log_bg parameters exhibit a funnel geometry that makes the sampler
     # struggle
+    dlog_total_counts = Vector{Float64}(undef, n_spec)
     log_total_counts = Vector{Float64}(undef, n_spec)
     for i in eachindex(log_total_counts)
-        log_total_counts[i] ~ Turing.Flat() # Prior will be put on later
+        log_est_ct = logaddexp(log_est_bg_rate + log(bg_exposure_spec[i]), log_est_fg_rate + log(fg_exposure[i]))
+        dlog_total_counts[i] ~ Turing.Flat() # Prior will be put on later
+        log_total_counts[i] := log_est_ct + dlog_total_counts[i] / exp(log_est_ct / 2) # No Jacobian needed, since transformation is data-dependent
     end
 
     log_fg_coeff_const = Vector{Float64}(undef, n_spec)
