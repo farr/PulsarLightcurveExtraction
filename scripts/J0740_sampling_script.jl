@@ -102,10 +102,6 @@ term_buffer = parsed_args["term-buffer"]
 window_size = parsed_args["window-size"]
 max_tree_depth = parsed_args["max-tree-depth"]
 
-@warn "Overriding command-line arguments for testing"
-n_chain = 1
-n_segments = 10
-
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
@@ -335,6 +331,7 @@ trace = from_mcmcchains(sampling_chains;
         :mu_log_bg => (:spec,),
         :mu_bg => (:spec,),
         :sigma_log_bg => (:spec,),
+        :cholesky_corr_log_bg => (:spec, :spec2),
         :cholesky_cov_log_bg => (:spec, :spec2),
         :cov_log_bg => (:spec, :spec2),
         :log_fg_coeff_const => (:spec,),
@@ -350,8 +347,7 @@ trace = from_mcmcchains(sampling_chains;
         :fourier => 1:n_fourier,
         :segment => analysis_segment_inds,
         :spec => 1:n_spec,
-        :spec2 => 1:n_spec,
-        :cholesky_corr_param => 1:((n_spec * (n_spec - 1)) ÷ 2)))
+        :spec2 => 1:n_spec))
 
 ## Check minimum ESS (sampling draws only):
 println("Minimum ESS: ", minimum(ess(trace)))
