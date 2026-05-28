@@ -102,6 +102,10 @@ term_buffer = parsed_args["term-buffer"]
 window_size = parsed_args["window-size"]
 max_tree_depth = parsed_args["max-tree-depth"]
 
+@warn "Overriding command-line arguments for testing"
+n_chain = 1
+n_segments = 10
+
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 

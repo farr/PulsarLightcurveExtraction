@@ -234,7 +234,7 @@ function foreground_background_exposure(pi_min, pi_max, segment_starts, segment_
     n_segments = length(segment_starts)
     n_spec = size(fg_spline_basis, 2)
 
-    fg_exposure = zeros(Float64, n_spec)
+    fg_exposure = zeros(Float64, n_spec, n_segments)
     bg_exposure = zeros(Float64, n_spec, n_segments)
 
     summed_fg_basis = dropdims(sum(fg_spline_basis[pi_min:pi_max, :, :], dims=1), dims=1)
@@ -249,7 +249,7 @@ function foreground_background_exposure(pi_min, pi_max, segment_starts, segment_
         arf_bin = searchsortedfirst(arf_ends, segment_start)
         @assert segment_start >= arf_starts[arf_bin] && segment_end <= arf_ends[arf_bin] "Segment does not fall within any ARF bin."
 
-        fg_exposure .= fg_exposure .+ T .* summed_fg_basis[:, arf_bin]
+        fg_exposure[:, i] .= T .* summed_fg_basis[:, arf_bin]
         bg_exposure[:, i] = T .* summed_bg_basis[:, arf_bin]
     end
 
@@ -402,11 +402,12 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     @assert size(fg_spectral_design_matrix) == (n_counts, n_spec) "Foreground spectral design matrix must have size n_counts, n_spec."
     @assert size(bg_spectral_design_matrix) == (n_counts, n_spec) "Background spectral design matrix must have size n_counts, n_spec."
     @assert size(event_segment_indices) == (n_counts,) "Event segment indices must have size n_counts."
-    @assert size(fg_exposure) == (n_spec,) "Foreground exposure must have size n_spec."
+    @assert size(fg_exposure) == (n_spec, n_seg) "Foreground exposure must have size n_spec, n_seg."
 
+    fg_exposure_spec = dropdims(sum(fg_exposure, dims=2), dims=2)
     bg_exposure_spec = dropdims(sum(bg_exposure, dims=2), dims=2)
     total_bg_exposure = sum(bg_exposure_spec)
-    total_fg_exposure = sum(fg_exposure)
+    total_fg_exposure = sum(fg_exposure_spec)
 
     est_bg_rate = 0.5 * n_counts / total_bg_exposure
     est_fg_rate = 0.5 * n_counts / total_fg_exposure
@@ -423,20 +424,20 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     dlog_total_counts = Vector{Float64}(undef, n_spec)
     log_total_counts = Vector{Float64}(undef, n_spec)
     for i in eachindex(log_total_counts)
-        log_est_ct = logaddexp(log_est_bg_rate + log(bg_exposure_spec[i]), log_est_fg_rate + log(fg_exposure[i]))
+        log_est_ct = logaddexp(log_est_bg_rate + log(bg_exposure_spec[i]), log_est_fg_rate + log(fg_exposure_spec[i]))
         dlog_total_counts[i] ~ Turing.Flat() # Prior will be put on later
         log_total_counts[i] := log_est_ct + dlog_total_counts[i] / exp(log_est_ct / 2) # No Jacobian needed, since transformation is data-dependent
     end
 
     log_fg_coeff_const = Vector{Float64}(undef, n_spec)
     for i in eachindex(log_fg_coeff_const)
-        log_fg_coeff_const[i] ~ truncated(Normal(log_est_fg_rate, 4), nothing, log_total_counts[i] - log(fg_exposure[i]))
+        log_fg_coeff_const[i] ~ truncated(Normal(log_est_fg_rate, 4), nothing, log_total_counts[i] - log(fg_exposure_spec[i]))
     end
     fg_coeff_const := exp.(log_fg_coeff_const)
 
     mu_log_bg = Vector{Float64}(undef, n_spec)
     for i in eachindex(mu_log_bg)
-        mu_log_bg[i] := logdiffexp(log_total_counts[i], log_fg_coeff_const[i] + log(fg_exposure[i])) - log(bg_exposure_spec[i])
+        mu_log_bg[i] := logdiffexp(log_total_counts[i], log_fg_coeff_const[i] + log(fg_exposure_spec[i])) - log(bg_exposure_spec[i])
         Turing.@addlogprob! logpdf(Normal(log_est_bg_rate, 4), mu_log_bg[i]) + log_total_counts[i] - mu_log_bg[i] # logpdf(mu_log_bg) + log(Jacobian(mu_log_bg -> log_total_counts))
     end
     mu_bg := exp.(mu_log_bg)
@@ -546,7 +547,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     any(<=(0), r) && (Turing.@addlogprob! -Inf; return)
     Turing.@addlogprob! sum(log.(r))
 
-    ex_cts = dot(fg_coeff_const, fg_exposure) + dot(bg, bg_exposure)
+    ex_cts = dot(fg_coeff_const, fg_exposure_spec) + dot(bg, bg_exposure)
     Turing.@addlogprob! -ex_cts
 
     return
@@ -663,14 +664,15 @@ function foreground_background_lightcurves_segment(trace, phases, segment_index,
     p = trace.posterior
     
     fg_exposure_array, bg_exposure_array = foreground_background_exposure(pi_min, pi_max, [segment_starts[segment_index]], [segment_ends[segment_index]], arf_starts, arf_ends, fg_spline_basis, bg_spline_basis)
+    fg_exposure_single = fg_exposure_array[:, 1]
     bg_exposure_single = bg_exposure_array[:, 1]
 
     # We actually don't want the *total* exposure---we want the exposure *per
     # time* so that the lightcurve is in units of counts per second.
-    fg_exposure_array ./= T
+    fg_exposure_single ./= T
     bg_exposure_single ./= T
 
-    fg_exposure = DimArray(fg_exposure_array, dims(p, :spec))
+    fg_exposure = DimArray(fg_exposure_single, dims(p, :spec))
     bg_exposure = DimArray(bg_exposure_single, dims(p, :spec))
 
     cmm, smm = cos_sin_matrices(phases, size(p, :fourier))
