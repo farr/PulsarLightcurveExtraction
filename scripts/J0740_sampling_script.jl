@@ -136,7 +136,21 @@ using Logging
 using Pathfinder
 using ProgressLogging
 using TerminalLoggers
-global_logger(TerminalLogger())
+
+# Wrap TerminalLogger so each message is immediately flushed — necessary when
+# stdout/stderr are redirected to files (e.g. SLURM), where Julia buffers by default.
+struct FlushingLogger <: AbstractLogger
+    inner::TerminalLogger
+end
+Logging.min_enabled_level(l::FlushingLogger) = Logging.min_enabled_level(l.inner)
+Logging.shouldlog(l::FlushingLogger, args...) = Logging.shouldlog(l.inner, args...)
+Logging.catch_exceptions(l::FlushingLogger) = Logging.catch_exceptions(l.inner)
+function Logging.handle_message(l::FlushingLogger, args...; kwargs...)
+    Logging.handle_message(l.inner, args...; kwargs...)
+    flush(stdout)
+    flush(stderr)
+end
+global_logger(FlushingLogger(TerminalLogger()))
 
 ## Load data
 event_time, event_phase, event_pi, segment_start, segment_stop = FITS(joinpath(@__DIR__, "..", "data", "J0740_merged_phase_0.25-3keV.fits.gz"), "r") do f
