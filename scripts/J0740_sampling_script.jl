@@ -105,6 +105,25 @@ max_tree_depth = parsed_args["max-tree-depth"]
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 
+# Set up flushing logger before the first @info so Julia's logging dispatch is
+# JIT-compiled in a world age that already knows about FlushingLogger's methods.
+using Logging
+using TerminalLoggers
+using ProgressLogging
+
+struct FlushingLogger <: AbstractLogger
+    inner::TerminalLogger
+end
+Logging.min_enabled_level(l::FlushingLogger) = Logging.min_enabled_level(l.inner)
+Logging.shouldlog(l::FlushingLogger, args...) = Logging.shouldlog(l.inner, args...)
+Logging.catch_exceptions(l::FlushingLogger) = Logging.catch_exceptions(l.inner)
+function Logging.handle_message(l::FlushingLogger, args...; kwargs...)
+    Logging.handle_message(l.inner, args...; kwargs...)
+    flush(stdout)
+    flush(stderr)
+end
+global_logger(FlushingLogger(TerminalLogger()))
+
 using Distributed
 if n_chain > 1
     @info "Adding $n_chain processes for MCMC sampling..."
@@ -132,25 +151,7 @@ end
 end
 
 # Pathfinder only needs to run on the main process for initialization.
-using Logging
 using Pathfinder
-using ProgressLogging
-using TerminalLoggers
-
-# Wrap TerminalLogger so each message is immediately flushed — necessary when
-# stdout/stderr are redirected to files (e.g. SLURM), where Julia buffers by default.
-struct FlushingLogger <: AbstractLogger
-    inner::TerminalLogger
-end
-Logging.min_enabled_level(l::FlushingLogger) = Logging.min_enabled_level(l.inner)
-Logging.shouldlog(l::FlushingLogger, args...) = Logging.shouldlog(l.inner, args...)
-Logging.catch_exceptions(l::FlushingLogger) = Logging.catch_exceptions(l.inner)
-function Logging.handle_message(l::FlushingLogger, args...; kwargs...)
-    Logging.handle_message(l.inner, args...; kwargs...)
-    flush(stdout)
-    flush(stderr)
-end
-global_logger(FlushingLogger(TerminalLogger()))
 
 ## Load data
 event_time, event_phase, event_pi, segment_start, segment_stop = FITS(joinpath(@__DIR__, "..", "data", "J0740_merged_phase_0.25-3keV.fits.gz"), "r") do f
