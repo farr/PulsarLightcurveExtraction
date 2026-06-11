@@ -437,7 +437,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
 
     mu_log_bg = Vector{Float64}(undef, n_spec)
     for i in eachindex(mu_log_bg)
-        mu_log_bg[i] := logdiffexp(log_total_counts[i], log_fg_coeff_const[i] + log(fg_exposure_spec[i])) - log(bg_exposure_spec[i])
+        mu_log_bg[i] := logdiffexp(log_total_counts[i] - log(fg_exposure_spec[i]), log_fg_coeff_const[i]) + log(fg_exposure_spec[i]) - log(bg_exposure_spec[i])
         Turing.@addlogprob! logpdf(Normal(log_est_bg_rate, 4), mu_log_bg[i]) + log_total_counts[i] - mu_log_bg[i] # logpdf(mu_log_bg) + log(Jacobian(mu_log_bg -> log_total_counts))
     end
     mu_bg := exp.(mu_log_bg)
