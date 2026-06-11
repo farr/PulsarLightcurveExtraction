@@ -473,8 +473,42 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         for i in 1:n_spec
             log_bg_raw[i, j] ~ Turing.Flat()
         end
-        F = fisher_log_bgs[j]
-        x0 = mle_log_bgs[j]
+       
+        # An issue that we face is that the Fisher and MLE was computed assuming
+        # that the total counts are *all* attributable to the background; but we
+        # now have some foreground contribution as well.  Roughly:
+        #
+        # log_total = logaddexp(log_fg_const + log_exposure_fg -
+        # log_exposure_bg, log_bg)
+        #
+        # So we first transform the MLE (as long as the MLE estimate is greater
+        # than the FG contribution; otherwise we set the Fisher components to
+        # zero, because the measured MLE is dominated by the foreground, and we
+        # have no constraint on the background.
+        F_total = fisher_log_bgs[j]
+        x0_total = mle_log_bgs[j]
+
+        x0 = Vector{Float64}(undef, n_spec)
+        gradient = Vector{Float64}(undef, n_spec)
+        F = Matrix{Float64}(undef, n_spec, n_spec)
+        for i in 1:n_spec
+            log_fg_contrib = log_fg_coeff_const[i] + log(fg_exposure[i,j]) - log(bg_exposure[i,j])
+
+            if x0_total[i] > log_fg_contrib
+                x0[i] = logdiffexp(x0_total[i], log_fg_contrib)
+                gradient[i] = exp(x0[i] - x0_total[i])
+            else
+                # Zero-out this part of the Fisher, run completely off the prior for this component.
+                x0[i] = 0.0
+                gradient[i] = 0.0
+            end
+        end
+
+        for k in 1:n_spec
+            for l in 1:n_spec
+                F[k,l] = F_total[k,l] * gradient[k] * gradient[l]
+            end
+        end
 
         # An important matrix is S^{-1} = (F + Sigma^{-1}) = F + (L^T)^{-1}
         # L^{-1} = (L^{T})^{-1} (L^T F L + I) L^{-1} Or S = L (L^T F L + I)^{-1}
