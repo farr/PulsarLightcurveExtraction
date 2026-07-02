@@ -77,6 +77,14 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Maximum tree depth for NUTS (default: 10; lower values speed up warmup at the cost of some sampling efficiency)"
             arg_type = Int
             default = 10
+        "--checkpoint"
+            help = "Path to a checkpoint file. If given, sampling state is saved periodically; if the checkpoint(s) already exist, sampling resumes from them instead of Pathfinder initialization (default: no checkpointing)"
+            arg_type = String
+            default = nothing
+        "--checkpoint-every"
+            help = "Number of iterations between checkpoint writes (only used if --checkpoint is given)"
+            arg_type = Int
+            default = 100
     end
     global parsed_args = parse_args(s)
 end
@@ -101,6 +109,8 @@ init_buffer = parsed_args["init-buffer"]
 term_buffer = parsed_args["term-buffer"]
 window_size = parsed_args["window-size"]
 max_tree_depth = parsed_args["max-tree-depth"]
+checkpoint_path = parsed_args["checkpoint"]
+checkpoint_every = parsed_args["checkpoint-every"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
@@ -144,6 +154,8 @@ end
     using Mooncake
     using NCDatasets
     using PulsarLightcurveExtraction
+    using Random
+    using Serialization
     using Turing
 
     # Otherwise the sampler will try to use multiple threads for linear algebra, alas!
@@ -152,6 +164,59 @@ end
 
 # Pathfinder only needs to run on the main process for initialization.
 using Pathfinder
+
+## Checkpointing helpers (must be defined on every worker, since sampling of each chain
+## may happen on a different process).
+
+# Serialize to a temporary file, then rename, so a process killed mid-write (e.g. by a
+# SLURM walltime limit) can never leave a corrupt checkpoint file behind.
+@everywhere function atomic_serialize(path, x)
+    tmp = path * ".tmp"
+    serialize(tmp, x)
+    mv(tmp, path; force=true)
+end
+
+# Run one chain to `n_total` iterations, checkpointing every `checkpoint_every`
+# iterations if `checkpoint_file !== nothing`. If `checkpoint_file` already exists, the
+# chain resumes from the saved (position, metric, adaptor, iteration) state rather than
+# from `init_params`. `state.state.i` (the sampler's own iteration counter, carried
+# inside `state` across calls) is what governs when NUTS adaptation freezes, so a chain
+# split across many restarts adapts identically to one run uninterrupted; only draws
+# from sampling iterations (state.i > n_adapts) are kept, since warmup draws are
+# discarded downstream anyway.
+@everywhere function run_chain(model, kernel, n_adapts, n_total, checkpoint_file, checkpoint_every, init_params)
+    rng = Random.default_rng()
+
+    if checkpoint_file !== nothing && isfile(checkpoint_file)
+        iter, saved_n_adapts, saved_n_total, state, draws = deserialize(checkpoint_file)
+        @assert state.state.i == iter "Checkpoint file $(checkpoint_file) is corrupt: state.state.i ($(state.state.i)) != saved iteration ($(iter))"
+        @assert (saved_n_adapts, saved_n_total) == (n_adapts, n_total) "Checkpoint file $(checkpoint_file) was written with n_adapts=$(saved_n_adapts), n_total=$(saved_n_total), but this run requested n_adapts=$(n_adapts), n_total=$(n_total); --n-mcmc (and --checkpoint) must match the original run."
+        @info "Resuming chain from checkpoint $(checkpoint_file) at iteration $(iter)/$(n_total)"
+    else
+        t, state = AbstractMCMC.step(rng, model, kernel; initial_params=init_params, n_adapts=n_adapts)
+        iter = state.state.i
+        draws = iter > n_adapts ? [t] : typeof(t)[]
+        if checkpoint_file !== nothing
+            atomic_serialize(checkpoint_file, (iter, n_adapts, n_total, state, draws))
+        end
+    end
+
+    while iter < n_total
+        t, state = AbstractMCMC.step(rng, model, kernel, state; n_adapts=n_adapts)
+        iter = state.state.i
+        if iter > n_adapts
+            push!(draws, t)
+        end
+        if iter % checkpoint_every == 0 || iter == n_total
+            @info "Chain progress: $(iter)/$(n_total) iterations"
+            if checkpoint_file !== nothing
+                atomic_serialize(checkpoint_file, (iter, n_adapts, n_total, state, draws))
+            end
+        end
+    end
+
+    return draws, state
+end
 
 ## Load data
 event_time, event_phase, event_pi, segment_start, segment_stop = FITS(joinpath(@__DIR__, "..", "data", "J0740_merged_phase_0.25-3keV.fits.gz"), "r") do f
@@ -279,64 +344,100 @@ else
     adtype = AutoMooncake()
 end
 
-## Pathfinder initialization
-# init_scale=init_width uses Pathfinder.UniformSampler(init_width), giving U(-init_width, init_width)
-# in unconstrained space — must stay near zero to avoid LKJ coordinate singularities.
-@info "Running Pathfinder (init_scale=$(init_width)) to initialize sampler position and diagonal metric..."
-pf_result = pathfinder(model;
-    init_scale=init_width,
-    ndraws=max(n_chain, 4),
-    adtype=adtype
-)
+n_warmup = n_mcmc
+n_total = 2 * n_mcmc
 
-# Diagonal of the LBFGS inverse-Hessian approximation in unconstrained space.
-# fit_distribution.Σ is a low-rank structured matrix (rank ≤ 2*lbfgs_memory);
-# diag() extracts the diagonal without ever allocating the O(d²) dense matrix.
-metric_diag = diag(pf_result.fit_distribution.Σ)
-@info "Pathfinder complete. Model unconstrained dimension: $(length(metric_diag))"
-
-## NUTS kernel with Pathfinder-initialized diagonal mass matrix
-kernel = externalsampler(
-    NUTSCustomBuffer(
-        target_arate;
-        max_depth=max_tree_depth,
-        metric=DiagEuclideanMetric(metric_diag),
-        init_buffer=init_buffer,
-        term_buffer=term_buffer,
-        window_size=window_size,
-    );
-    adtype=adtype
-)
-
-## Per-chain starting positions from Pathfinder draws
-# AbstractMCMC.to_samples converts the MCMCChains.Chains in draws_transformed back to
-# ParamsWithStats objects; .params gives the constrained NamedTuple for InitFromParams.
-pf_samples = AbstractMCMC.to_samples(DynamicPPL.ParamsWithStats, pf_result.draws_transformed, model)
-if n_chain == 1
-    init_params = InitFromParams(pf_samples[1].params)
+## Checkpoint file(s), one per chain. If every chain already has one on disk, we can
+## resume sampling directly from the saved states and skip Pathfinder entirely.
+checkpoint_paths = if checkpoint_path === nothing
+    fill(nothing, n_chain)
+elseif n_chain == 1
+    [checkpoint_path]
 else
-    init_params = [InitFromParams(pf_samples[i].params) for i in 1:n_chain]
+    ["$(checkpoint_path).chain$(i)" for i in 1:n_chain]
+end
+resuming = checkpoint_path !== nothing && all(p -> isfile(p), checkpoint_paths)
+
+if resuming
+    @info "Found checkpoint(s) at $(checkpoint_path); resuming sampling without re-running Pathfinder."
+    init_params_per_chain = fill(nothing, n_chain)
+    # The metric here only bootstraps a chain that has no checkpoint; every resumed
+    # chain carries its own adapted metric in its saved state, so this placeholder is
+    # never actually used.
+    kernel = externalsampler(
+        NUTSCustomBuffer(
+            target_arate;
+            max_depth=max_tree_depth,
+            metric=:diagonal,
+            init_buffer=init_buffer,
+            term_buffer=term_buffer,
+            window_size=window_size,
+        );
+        adtype=adtype
+    )
+else
+    ## Pathfinder initialization
+    # init_scale=init_width uses Pathfinder.UniformSampler(init_width), giving U(-init_width, init_width)
+    # in unconstrained space — must stay near zero to avoid LKJ coordinate singularities.
+    @info "Running Pathfinder (init_scale=$(init_width)) to initialize sampler position and diagonal metric..."
+    pf_result = pathfinder(model;
+        init_scale=init_width,
+        ndraws=max(n_chain, 4),
+        adtype=adtype
+    )
+
+    # Diagonal of the LBFGS inverse-Hessian approximation in unconstrained space.
+    # fit_distribution.Σ is a low-rank structured matrix (rank ≤ 2*lbfgs_memory);
+    # diag() extracts the diagonal without ever allocating the O(d²) dense matrix.
+    metric_diag = diag(pf_result.fit_distribution.Σ)
+    @info "Pathfinder complete. Model unconstrained dimension: $(length(metric_diag))"
+
+    ## NUTS kernel with Pathfinder-initialized diagonal mass matrix
+    kernel = externalsampler(
+        NUTSCustomBuffer(
+            target_arate;
+            max_depth=max_tree_depth,
+            metric=DiagEuclideanMetric(metric_diag),
+            init_buffer=init_buffer,
+            term_buffer=term_buffer,
+            window_size=window_size,
+        );
+        adtype=adtype
+    )
+
+    ## Per-chain starting positions from Pathfinder draws
+    # AbstractMCMC.to_samples converts the MCMCChains.Chains in draws_transformed back to
+    # ParamsWithStats objects; .params gives the constrained NamedTuple for InitFromParams.
+    pf_samples = AbstractMCMC.to_samples(DynamicPPL.ParamsWithStats, pf_result.draws_transformed, model)
+    init_params_per_chain = [InitFromParams(pf_samples[i].params) for i in 1:n_chain]
 end
 
-## Sample it
+## Sample it, checkpointing periodically if requested (see run_chain, defined above).
 # n_adapts must be passed explicitly: externalsampler forwards kwargs to AdvancedHMC's
 # step function, which defaults to n_adapts=0 (no adaptation) if not given. Without
 # this, the Pathfinder metric is never refined by WelfordVar and the step size found
 # by find_good_stepsize is never updated by dual averaging.
-#
-# discard_initial is omitted here (defaults to 0) so all 2*n_mcmc steps are retained.
-# We split the chain below to pass warmup draws into ArviZ's warmup groups.
-n_warmup = n_mcmc
 @info "Sampling with $n_segments segments of data with $n_chain chains ($n_warmup warmup + $n_mcmc sampling steps)..."
-if n_chain == 1
-    chains = sample(model, kernel, 2 * n_mcmc; n_adapts=n_warmup, initial_params=init_params)
-else
-    chains = sample(model, kernel, MCMCDistributed(), 2 * n_mcmc, n_chain; n_adapts=n_warmup, initial_params=init_params)
+if checkpoint_path !== nothing
+    @info "Checkpointing to $(checkpoint_path) every $(checkpoint_every) iterations"
 end
 
-## Split warmup from sampling draws
-warmup_chains   = chains[1:n_warmup, :, :]
-sampling_chains = chains[(n_warmup + 1):end, :, :]
+results = if n_chain == 1
+    [run_chain(model, kernel, n_warmup, n_total, checkpoint_paths[1], checkpoint_every, init_params_per_chain[1])]
+else
+    pmap(
+        (cp, ip) -> run_chain(model, kernel, n_warmup, n_total, cp, checkpoint_every, ip),
+        checkpoint_paths,
+        init_params_per_chain,
+    )
+end
+
+## run_chain only keeps sampling-phase draws (warmup draws are discarded once the
+## adaptation window closes), so no further splitting of warmup from sampling is needed.
+sampling_chains = AbstractMCMC.chainsstack([
+    AbstractMCMC.bundle_samples(draws, model, kernel, state, Turing.Inference.DEFAULT_CHAIN_TYPE)
+    for (draws, state) in results
+])
 
 ## Package it up
 trace = from_mcmcchains(sampling_chains;
@@ -369,3 +470,12 @@ println("Minimum ESS: ", minimum(ess(trace)))
 
 ## Save the chains
 to_netcdf(trace, outpath)
+
+## Now that the final trace is safely on disk, the checkpoints are no longer needed --
+## remove them so a future invocation with the same --checkpoint path starts fresh
+## rather than (harmlessly, but confusingly) resuming from an already-completed run.
+if checkpoint_path !== nothing
+    for p in checkpoint_paths
+        rm(p; force=true)
+    end
+end
