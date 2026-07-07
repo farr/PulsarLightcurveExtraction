@@ -446,6 +446,15 @@ progress_bar = Progress(n_chain * n_total; desc="Sampling: ", showspeed=true)
 # sample by alpha = 1 - exp(-amount / tau) instead of a fixed alpha. amount/tau is usually
 # small (amount is usually 1, tau ~ 10% of the total iteration count), where 1 - exp(-x)
 # loses precision to cancellation; -expm1(-x) computes it directly instead.
+#
+# A plain recursive EMA (ema = alpha*sample + (1-alpha)*ema_prev, seeded with ema=sample on
+# the first update) implicitly treats ema_prev as a fully-weighted estimate even right at
+# the start, when it's really just one (possibly atypical, e.g. JIT-inflated) sample — that
+# sample's influence then lingers at full strength for a full tau-iterations before it
+# decays out. We instead track the accumulated decayed weight `w_sum` alongside the
+# decayed weighted sum `ema_num` and divide them (West's algorithm / Adam-style bias
+# correction), so early samples are automatically discounted in proportion to how little
+# accumulated weight actually backs them, and the estimate converges to new data faster.
 total_iters = n_chain * n_total
 tau = 0.1 * total_iters
 run_start_t = time()
@@ -454,13 +463,17 @@ results = nothing
 @sync begin
     @async begin
         n_done = 0
-        ema_rate = nothing # seconds/iteration, exponential moving average
+        w_sum = 0.0   # accumulated (decayed) weight
+        ema_num = 0.0 # accumulated (decayed) weighted sum of sample rates
         last_t = run_start_t
         while (amount = take!(progress_channel)) >= 0
             t = time()
             sample_rate = (t - last_t) / amount
-            alpha = -expm1(-amount / tau)
-            ema_rate = ema_rate === nothing ? sample_rate : alpha * sample_rate + (1 - alpha) * ema_rate
+            decay = exp(-amount / tau)
+            alpha = -expm1(-amount / tau) # = 1 - decay, computed without cancellation
+            w_sum = decay * w_sum + alpha
+            ema_num = decay * ema_num + alpha * sample_rate
+            ema_rate = ema_num / w_sum
             last_t = t
             n_done += amount
 
