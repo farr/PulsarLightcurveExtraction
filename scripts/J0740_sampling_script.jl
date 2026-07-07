@@ -85,6 +85,10 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Number of iterations between checkpoint writes (only used if --checkpoint is given)"
             arg_type = Int
             default = 100
+        "--progress-timescale"
+            help = "Time constant of the progress bar's per-iteration EMA, as a fraction of total iterations (n_chain * n_total)"
+            arg_type = Float64
+            default = 0.1
     end
     global parsed_args = parse_args(s)
 end
@@ -111,6 +115,7 @@ window_size = parsed_args["window-size"]
 max_tree_depth = parsed_args["max-tree-depth"]
 checkpoint_path = parsed_args["checkpoint"]
 checkpoint_every = parsed_args["checkpoint-every"]
+progress_timescale = parsed_args["progress-timescale"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
 outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
@@ -456,7 +461,7 @@ progress_bar = Progress(n_chain * n_total; desc="Sampling: ", showspeed=true)
 # correction), so early samples are automatically discounted in proportion to how little
 # accumulated weight actually backs them, and the estimate converges to new data faster.
 total_iters = n_chain * n_total
-tau = 0.1 * total_iters
+tau = progress_timescale * total_iters
 run_start_t = time()
 
 results = nothing
