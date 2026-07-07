@@ -439,8 +439,8 @@ progress_bar = Progress(n_chain * n_total; desc="Sampling: ", showspeed=true)
 # chains report a big batch of already-done iterations instantly). We instead maintain our
 # own exponential moving average of the per-iteration duration, with time constant `tau`
 # (in units of completed iterations) of 0.1 * total iterations, and on every update fake a
-# single "virtual" iteration of that averaged duration via `start`/`tinit` so
-# ProgressMeter's built-in ETA/speed calculation reports it directly. For irregularly
+# single "virtual" run at that averaged duration via `tinit` (`start` stays fixed at 0)
+# so ProgressMeter's built-in ETA/speed calculation reports it directly. For irregularly
 # spaced samples (each channel receipt covers `amount` iterations, not always 1 — a resume
 # reports many at once), the correct continuous-time analogue of an EMA weights the new
 # sample by alpha = 1 - exp(-amount / tau) instead of a fixed alpha. amount/tau is usually
@@ -478,13 +478,11 @@ results = nothing
             n_done += amount
 
             if n_done >= total_iters
-                # Restore the true start/elapsed time so the final "Time: ..." summary
-                # reports the actual wall-clock duration, not the faked-out EMA window.
-                progress_bar.start = 0
+                # Restore the true elapsed time so the final "Time: ..." summary reports
+                # the actual wall-clock duration, not the faked-out EMA window.
                 progress_bar.tinit = run_start_t
             else
-                progress_bar.start = n_done - 1
-                progress_bar.tinit = t - ema_rate
+                progress_bar.tinit = t - ema_rate * n_done
             end
             update!(progress_bar, n_done)
         end
