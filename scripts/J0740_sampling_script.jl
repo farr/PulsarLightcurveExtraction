@@ -120,6 +120,7 @@ outpath = joinpath(@__DIR__, "..", "data", "J0740_trace$(trace_suffix).nc")
 using Logging
 using TerminalLoggers
 using ProgressLogging
+using ProgressMeter
 
 struct FlushingLogger <: AbstractLogger
     inner::TerminalLogger
@@ -184,7 +185,7 @@ end
 # split across many restarts adapts identically to one run uninterrupted; only draws
 # from sampling iterations (state.i > n_adapts) are kept, since warmup draws are
 # discarded downstream anyway.
-@everywhere function run_chain(model, kernel, n_adapts, n_total, checkpoint_file, checkpoint_every, init_params)
+@everywhere function run_chain(model, kernel, n_adapts, n_total, checkpoint_file, checkpoint_every, init_params, progress_channel=nothing)
     rng = Random.default_rng()
 
     if checkpoint_file !== nothing && isfile(checkpoint_file)
@@ -192,6 +193,7 @@ end
         @assert state.state.i == iter "Checkpoint file $(checkpoint_file) is corrupt: state.state.i ($(state.state.i)) != saved iteration ($(iter))"
         @assert (saved_n_adapts, saved_n_total) == (n_adapts, n_total) "Checkpoint file $(checkpoint_file) was written with n_adapts=$(saved_n_adapts), n_total=$(saved_n_total), but this run requested n_adapts=$(n_adapts), n_total=$(n_total); --n-mcmc (and --checkpoint) must match the original run."
         @info "Resuming chain from checkpoint $(checkpoint_file) at iteration $(iter)/$(n_total)"
+        progress_channel !== nothing && put!(progress_channel, iter)
     else
         t, state = AbstractMCMC.step(rng, model, kernel; initial_params=init_params, n_adapts=n_adapts)
         iter = state.state.i
@@ -199,6 +201,7 @@ end
         if checkpoint_file !== nothing
             atomic_serialize(checkpoint_file, (iter, n_adapts, n_total, state, draws))
         end
+        progress_channel !== nothing && put!(progress_channel, iter)
     end
 
     while iter < n_total
@@ -207,8 +210,8 @@ end
         if iter > n_adapts
             push!(draws, t)
         end
+        progress_channel !== nothing && put!(progress_channel, 1)
         if iter % checkpoint_every == 0 || iter == n_total
-            @info "Chain progress: $(iter)/$(n_total) iterations"
             if checkpoint_file !== nothing
                 atomic_serialize(checkpoint_file, (iter, n_adapts, n_total, state, draws))
             end
@@ -422,14 +425,70 @@ if checkpoint_path !== nothing
     @info "Checkpointing to $(checkpoint_path) every $(checkpoint_every) iterations"
 end
 
-results = if n_chain == 1
-    [run_chain(model, kernel, n_warmup, n_total, checkpoint_paths[1], checkpoint_every, init_params_per_chain[1])]
-else
-    pmap(
-        (cp, ip) -> run_chain(model, kernel, n_warmup, n_total, cp, checkpoint_every, ip),
-        checkpoint_paths,
-        init_params_per_chain,
-    )
+# Chains run as separate worker processes, so a plain ProgressMeter bar can't be
+# ticked directly from inside run_chain. Instead, run_chain put!s the number of
+# newly-completed iterations onto a RemoteChannel as it goes (a resume jumps by the
+# checkpointed iteration count, everything after that is +1 per step); a task on the
+# main process drains the channel and advances the bar. A -1 sentinel, sent from a
+# `finally` so it fires even if sampling errors, tells the drain task to stop.
+progress_channel = RemoteChannel(() -> Channel{Int}(64))
+progress_bar = Progress(n_chain * n_total; desc="Sampling: ", showspeed=true)
+
+# ProgressMeter's ETA/speed are elapsed_time / (counter - start) since `tinit`, i.e. a
+# lifetime average — misleading here since per-iteration time varies a lot (and resumed
+# chains report a big batch of already-done iterations instantly). We instead maintain our
+# own exponential moving average of the per-iteration duration, with time constant `tau`
+# (in units of completed iterations) of 0.1 * total iterations, and on every update fake a
+# single "virtual" iteration of that averaged duration via `start`/`tinit` so
+# ProgressMeter's built-in ETA/speed calculation reports it directly. For irregularly
+# spaced samples (each channel receipt covers `amount` iterations, not always 1 — a resume
+# reports many at once), the correct continuous-time analogue of an EMA weights the new
+# sample by alpha = 1 - exp(-amount / tau) instead of a fixed alpha. amount/tau is usually
+# small (amount is usually 1, tau ~ 10% of the total iteration count), where 1 - exp(-x)
+# loses precision to cancellation; -expm1(-x) computes it directly instead.
+total_iters = n_chain * n_total
+tau = 0.1 * total_iters
+run_start_t = time()
+
+results = nothing
+@sync begin
+    @async begin
+        n_done = 0
+        ema_rate = nothing # seconds/iteration, exponential moving average
+        last_t = run_start_t
+        while (amount = take!(progress_channel)) >= 0
+            t = time()
+            sample_rate = (t - last_t) / amount
+            alpha = -expm1(-amount / tau)
+            ema_rate = ema_rate === nothing ? sample_rate : alpha * sample_rate + (1 - alpha) * ema_rate
+            last_t = t
+            n_done += amount
+
+            if n_done >= total_iters
+                # Restore the true start/elapsed time so the final "Time: ..." summary
+                # reports the actual wall-clock duration, not the faked-out EMA window.
+                progress_bar.start = 0
+                progress_bar.tinit = run_start_t
+            else
+                progress_bar.start = n_done - 1
+                progress_bar.tinit = t - ema_rate
+            end
+            update!(progress_bar, n_done)
+        end
+    end
+    @async try
+        global results = if n_chain == 1
+            [run_chain(model, kernel, n_warmup, n_total, checkpoint_paths[1], checkpoint_every, init_params_per_chain[1], progress_channel)]
+        else
+            pmap(
+                (cp, ip) -> run_chain(model, kernel, n_warmup, n_total, cp, checkpoint_every, ip, progress_channel),
+                checkpoint_paths,
+                init_params_per_chain,
+            )
+        end
+    finally
+        put!(progress_channel, -1)
+    end
 end
 
 ## run_chain only keeps sampling-phase draws (warmup draws are discarded once the
