@@ -392,9 +392,18 @@ units of counts per time per area, and `fg_scale` should be set according to the
 typical amount of foreground that is reasonable).
 
 The model that is returned is suitable for sampling with Turing.jl samplers.
+
+`linking_only`, if set to `true`, skips every computation that only ever
+contributes a log-density term (the per-segment background Cholesky solves and
+the per-event `compute_r` sum) without affecting the value or distribution of
+any sampled site. This leaves the set, order, and distributions of all `~`
+statements unchanged (so e.g. `DynamicPPL.LogDensityFunction(model, ...,
+LinkAll())` still produces a correctly-ordered unconstrained vector) while
+making a single model evaluation dramatically cheaper -- useful for recovering
+just the unconstraining transform of an already-known parameter draw.
 """
 
-@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, mle_log_bgs, fisher_log_bgs, fractional_variability)
+@model function spec_fourier_model(cos_design_matrix, sin_design_matrix, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, mle_log_bgs, fisher_log_bgs, fractional_variability; linking_only::Bool=false)
     n_counts, n_fourier = size(cos_design_matrix)
     n_spec, n_seg = size(bg_exposure)
 
@@ -466,14 +475,26 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     end
     cov_log_bg := cholesky_cov_log_bg * cholesky_cov_log_bg'
 
-    log_bg_dist = MvNormal(mu_log_bg, PDMat(Cholesky(cholesky_cov_log_bg, :L, 0)))
+    # `log_bg_dist` and everything computed inside the `for j in 1:n_seg` loop below
+    # `log_bg_raw[i, j] ~ Turing.Flat()`, other than that Flat() sampling statement itself,
+    # only ever feeds into `@addlogprob!` (log-likelihood) terms or into `bg`/`log_bg`,
+    # which are themselves only consumed later by more `@addlogprob!` terms (via
+    # `compute_r`/`ex_cts`) -- never by the distribution of any later `~`-statement. So
+    # when `linking_only` is set (used to cheaply recover just the unconstraining
+    # transform of a parameter draw, e.g. to seed a NUTS mass matrix from a saved chain),
+    # all of that per-segment Cholesky work and the final `compute_r` sum over every event
+    # can be skipped entirely without changing the set, distributions, or order of any
+    # `~`-statement -- only the accompanying log-density terms are omitted.
+    log_bg_dist = linking_only ? nothing : MvNormal(mu_log_bg, PDMat(Cholesky(cholesky_cov_log_bg, :L, 0)))
     log_bg_raw = Matrix{Float64}(undef, n_spec, n_seg)
     log_bg = Matrix{Float64}(undef, n_spec, n_seg)
     for j in 1:n_seg
         for i in 1:n_spec
             log_bg_raw[i, j] ~ Turing.Flat()
         end
-       
+
+        linking_only && continue
+
         # An issue that we face is that the Fisher and MLE was computed assuming
         # that the total counts are *all* attributable to the background; but we
         # now have some foreground contribution as well.  Roughly:
@@ -534,15 +555,15 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
             return
         end
 
-        # We are approximating the log-posterior as 
+        # We are approximating the log-posterior as
         #
         # -1/2 ( (x - x0)' F (x - x0) + (x - mu)' Sigma^{-1} (x - mu) )
         #
-        # Thus the max occurs at 
+        # Thus the max occurs at
         #
         # x_hat = (F + Sigma^{-1})^{-1} (F x0 + Sigma^{-1} mu)
         #
-        # But we want to make sure to never materialize Sigma^{-1} for stability, and we would like to stay in the realm of so re-write as 
+        # But we want to make sure to never materialize Sigma^{-1} for stability, and we would like to stay in the realm of so re-write as
         #
         # x_hat = (F + Sigma^{-1})^{-1} Sigma^{-1} (Sigma F x0 + mu)
         #
@@ -550,7 +571,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
         #
         # x_hat = L (L^T F L + I)^{-1} L^{-1} (Sigma F x0 + mu)
         #
-        # Or 
+        # Or
         #
         # x_hat = L H^{-1} L^{-1} (Sigma F x0 + mu)
         ΣF = cov_log_bg * F
@@ -561,7 +582,7 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
 
         Turing.@addlogprob! logpdf(log_bg_dist, log_bg[:,j]) + sum(log.(diag(S_chol.L)))
     end
-    bg := exp.(log_bg)
+    linking_only || (bg := exp.(log_bg))
 
     dsigma_fg ~ truncated(Normal(0.0, 1.0), 0.0, Inf)
     sigma_fg := fractional_variability * est_fg_rate * dsigma_fg
@@ -577,12 +598,18 @@ The model that is returned is suitable for sampling with Turing.jl samplers.
     fg_coeffs_cos := sigma_fg * dfg_coeffs_cos
     fg_coeffs_sin := sigma_fg * dfg_coeffs_sin
 
-    r = compute_r(fg_spectral_design_matrix, fg_coeff_const, fg_coeffs_cos, fg_coeffs_sin, cos_design_matrix, sin_design_matrix, bg_spectral_design_matrix, bg, event_segment_indices)
-    any(<=(0), r) && (Turing.@addlogprob! -Inf; return)
-    Turing.@addlogprob! sum(log.(r))
+    if !linking_only
+        # This per-event sum (over every photon in the dataset) is by far the most
+        # expensive part of a full model evaluation; skipped entirely when linking_only,
+        # since `r`/`ex_cts` only ever produce `@addlogprob!` terms, never feed any
+        # `~`-statement (there are none left below this point anyway).
+        r = compute_r(fg_spectral_design_matrix, fg_coeff_const, fg_coeffs_cos, fg_coeffs_sin, cos_design_matrix, sin_design_matrix, bg_spectral_design_matrix, bg, event_segment_indices)
+        any(<=(0), r) && (Turing.@addlogprob! -Inf; return)
+        Turing.@addlogprob! sum(log.(r))
 
-    ex_cts = dot(fg_coeff_const, fg_exposure_spec) + dot(bg, bg_exposure)
-    Turing.@addlogprob! -ex_cts
+        ex_cts = dot(fg_coeff_const, fg_exposure_spec) + dot(bg, bg_exposure)
+        Turing.@addlogprob! -ex_cts
+    end
 
     return
 end

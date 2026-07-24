@@ -85,6 +85,10 @@ let s = ArgParseSettings(description="Sample the J0740 pulsar lightcurve model."
             help = "Number of iterations between checkpoint writes (only used if --checkpoint is given)"
             arg_type = Int
             default = 100
+        "--init-chain"
+            help = "Path to a saved NetCDF trace file (as produced by this script) to initialize sampler state from, instead of Pathfinder. n_chain random draws from the file are used as per-chain starting positions, and the diagonal mass matrix is set to the variance, across every draw in the file, of the unconstrained parameters (default: no chain-file initialization, i.e. use Pathfinder). Ignored if --checkpoint is given and its checkpoint(s) already exist, in which case sampling resumes from them instead."
+            arg_type = String
+            default = nothing
         "--progress-timescale"
             help = "Time constant of the progress bar's per-iteration EMA, as a fraction of total iterations (n_chain * n_total)"
             arg_type = Float64
@@ -115,6 +119,7 @@ window_size = parsed_args["window-size"]
 max_tree_depth = parsed_args["max-tree-depth"]
 checkpoint_path = parsed_args["checkpoint"]
 checkpoint_every = parsed_args["checkpoint-every"]
+init_chain_path = parsed_args["init-chain"]
 progress_timescale = parsed_args["progress-timescale"]
 
 trace_suffix = (n_segments === nothing ? "" : "_$(n_segments)")
@@ -168,8 +173,9 @@ end
     BLAS.set_num_threads(1)
 end
 
-# Pathfinder only needs to run on the main process for initialization.
+# Pathfinder and chain-file initialization only need to run on the main process.
 using Pathfinder
+using Statistics
 
 ## Checkpointing helpers (must be defined on every worker, since sampling of each chain
 ## may happen on a different process).
@@ -377,6 +383,87 @@ if resuming
             target_arate;
             max_depth=max_tree_depth,
             metric=:diagonal,
+            init_buffer=init_buffer,
+            term_buffer=term_buffer,
+            window_size=window_size,
+        );
+        adtype=adtype
+    )
+elseif init_chain_path !== nothing
+    ## Chain-file initialization: draw n_chain random starting positions from a
+    ## previously-saved trace, and set the diagonal metric to the variance (in
+    ## unconstrained space) of every draw in the file.
+    @info "Loading initialization chain from $(init_chain_path)..."
+    init_trace = from_netcdf(init_chain_path)
+    init_post = init_trace.posterior
+
+    @assert size(init_post.dlog_total_counts, :spec) == n_spec "Init-chain file $(init_chain_path) has $(size(init_post.dlog_total_counts, :spec)) spectral bins, but this run uses --n-spec=$(n_spec)."
+    @assert size(init_post.log_bg_raw, :segment) == n_segments "Init-chain file $(init_chain_path) has $(size(init_post.log_bg_raw, :segment)) segments, but this run uses $(n_segments) segments."
+
+    # cholesky_corr_log_bg is LKJCholesky-distributed, so DynamicPPL/ArviZ store only its
+    # `.L` field (the lower-triangular Cholesky factor of the correlation matrix); the
+    # strict upper triangle, which was never a named variable to begin with, comes back
+    # from NetCDF as NaN and must be zeroed before reassembling a `Cholesky` object.
+    cholesky_L_sym = Symbol("cholesky_corr_log_bg.L")
+    params_at(ci, di) = (
+        dlog_total_counts=Array(init_post.dlog_total_counts[draw=di, chain=ci]),
+        log_fg_coeff_const=Array(init_post.log_fg_coeff_const[draw=di, chain=ci]),
+        sigma_log_bg=Array(init_post.sigma_log_bg[draw=di, chain=ci]),
+        cholesky_corr_log_bg=Cholesky(Matrix(LowerTriangular(replace(Array(init_post[cholesky_L_sym][draw=di, chain=ci]), NaN => 0.0))), :L, 0),
+        log_bg_raw=Array(init_post.log_bg_raw[draw=di, chain=ci]),
+        dsigma_fg=init_post.dsigma_fg[draw=di, chain=ci],
+        dfg_coeffs_cos=Array(init_post.dfg_coeffs_cos[draw=di, chain=ci]),
+        dfg_coeffs_sin=Array(init_post.dfg_coeffs_sin[draw=di, chain=ci]),
+    )
+
+    n_avail_chain = size(init_post.dlog_total_counts, :chain)
+    n_avail_draw = size(init_post.dlog_total_counts, :draw)
+    all_idx = vec(collect(Iterators.product(1:n_avail_chain, 1:n_avail_draw)))
+
+    if length(all_idx) >= n_chain
+        chosen_idx = all_idx[randperm(length(all_idx))[1:n_chain]]
+    else
+        @warn "Init-chain file $(init_chain_path) has only $(length(all_idx)) draws, fewer than n_chain=$(n_chain); sampling starting positions with replacement."
+        chosen_idx = [all_idx[rand(1:length(all_idx))] for _ in 1:n_chain]
+    end
+    init_params_per_chain = [InitFromParams(params_at(ci, di)) for (ci, di) in chosen_idx]
+
+    # LinkAll() + rand(..., InitFromParams(...)) applies exactly the same unconstraining
+    # transform, in exactly the same variable ordering, that externalsampler itself uses
+    # to seed the NUTS kernel below — so the resulting vectors line up index-for-index
+    # with metric_diag/DiagEuclideanMetric. We build a second model instance with
+    # linking_only=true (see PulsarLightcurveExtraction.spec_fourier_model) so that this
+    # per-draw evaluation skips the per-segment Cholesky solves and the per-event
+    # `compute_r` sum — neither of which affects any `~`-statement's value or ordering,
+    # they only contribute log-density terms we don't need here. Without this, each draw
+    # would cost as much as a full NUTS log-density evaluation, making this loop as
+    # expensive as re-running a large chunk of the original sampling run.
+    linking_model = PulsarLightcurveExtraction.spec_fourier_model(cm, sm, fg_spectral_design_matrix, bg_spectral_design_matrix, event_segment_indices, fg_exposure, bg_exposure, log_bg_mle, log_bg_fisher, fractional_variability; linking_only=true)
+    @info "Computing unconstrained-space variance over $(length(all_idx)) draws in $(init_chain_path) to initialize the diagonal metric..."
+    ldf = DynamicPPL.LogDensityFunction(linking_model, DynamicPPL.getlogjoint_internal, DynamicPPL.LinkAll())
+    rng = Random.default_rng()
+    # Fill a preallocated matrix column-by-column rather than `reduce(hcat, ...)` over a
+    # generator: `reduce` on a non-array iterator is a strictly sequential left fold, so
+    # each `hcat` reallocates and re-copies every previously accumulated column, making the
+    # whole thing O(n^2) in the number of draws. With the full chain (thousands of draws)
+    # and a parameter dimension in the thousands (e.g. log_bg_raw is n_spec*n_segments),
+    # that quadratic blowup dominates the runtime.
+    unconstrained = Matrix{Float64}(undef, 0, 0)
+    for (j, (ci, di)) in enumerate(all_idx)
+        v = rand(rng, ldf, InitFromParams(params_at(ci, di)))
+        if j == 1
+            global unconstrained = Matrix{Float64}(undef, length(v), length(all_idx))
+        end
+        unconstrained[:, j] = v
+    end
+    metric_diag = vec(var(unconstrained; dims=2))
+    @info "Chain-file initialization complete. Model unconstrained dimension: $(length(metric_diag))"
+
+    kernel = externalsampler(
+        NUTSCustomBuffer(
+            target_arate;
+            max_depth=max_tree_depth,
+            metric=DiagEuclideanMetric(metric_diag),
             init_buffer=init_buffer,
             term_buffer=term_buffer,
             window_size=window_size,
