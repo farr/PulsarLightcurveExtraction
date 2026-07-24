@@ -8,4 +8,6 @@
 
 mkdir -p logs
 
+echo "Arguments: $@"
+
 julia --project=. scripts/J0740_sampling_script.jl "$@"
